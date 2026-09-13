@@ -1,17 +1,14 @@
 /**
- * A minimal, GitHub-backed Elm package installer.
+ * Client-side Elm package installer.
  *
- * Elm package sources are not served by package.elm-lang.org, but every
- * published package has a public Git repo tagged with its version, and GitHub
- * sends `Access-Control-Allow-Origin: *`. So the browser can fetch a package's
- * `elm.json` and `src/` directly.
+ * Given `author/package[ @version]`, downloads the package's `elm.json` and
+ * sources from a CDN (see `sources.js`) and writes them into the compiler's
+ * virtual file system, recursing into the package's Elm dependencies.
  *
  * This is deliberately small — enough to make `import SomePackage` work for the
  * common case. It does not implement Elm's full version solver; see README.md.
  */
-
-const GITHUB_API = 'https://api.github.com';
-const GITHUB_RAW = 'https://raw.githubusercontent.com';
+import { fetchPackage, getSources } from './sources.js';
 
 const compareVersions = (a, b) => {
   const pa = a.split('.').map(Number);
@@ -39,8 +36,21 @@ export function satisfies(version, constraint) {
 
 const lowerBound = (constraint) => /(\d+\.\d+\.\d+)\s*<=/.exec(constraint || '')?.[1] ?? null;
 
-async function latestVersion(name) {
-  const res = await fetch(`${GITHUB_API}/repos/${name}/tags?per_page=100`);
+/** Latest published version of a package (jsDelivr first, GitHub tags fallback). */
+export async function latestVersion(name) {
+  try {
+    const res = await fetch(`https://data.jsdelivr.com/v1/packages/gh/${name}`);
+    if (res.ok) {
+      const data = await res.json();
+      const versions = (data.versions ?? [])
+        .map((v) => (typeof v === 'string' ? v : v.version))
+        .filter((v) => /^\d+\.\d+\.\d+$/.test(v));
+      if (versions.length) return versions.sort(compareVersions).at(-1);
+    }
+  } catch {
+    // fall through to GitHub
+  }
+  const res = await fetch(`https://api.github.com/repos/${name}/tags?per_page=100`);
   if (!res.ok) throw new Error(`Could not list tags for ${name} (HTTP ${res.status})`);
   const versions = (await res.json())
     .map((tag) => tag.name.replace(/^v/, ''))
@@ -49,43 +59,21 @@ async function latestVersion(name) {
   return versions.sort(compareVersions).at(-1);
 }
 
-async function fetchElmJson(name, version) {
-  const res = await fetch(`${GITHUB_RAW}/${name}/${version}/elm.json`);
-  if (!res.ok) throw new Error(`Could not fetch elm.json for ${name}@${version} (HTTP ${res.status})`);
-  return res.json();
-}
-
-async function fetchSources(name, version) {
-  const res = await fetch(`${GITHUB_API}/repos/${name}/git/trees/${version}?recursive=1`);
-  if (!res.ok) throw new Error(`Could not list files for ${name}@${version} (HTTP ${res.status})`);
-  const tree = await res.json();
-  const paths = (tree.tree || [])
-    .filter((entry) => entry.type === 'blob' && entry.path.startsWith('src/'))
-    .map((entry) => entry.path);
-  const files = {};
-  await Promise.all(
-    paths.map(async (path) => {
-      const raw = await fetch(`${GITHUB_RAW}/${name}/${version}/${path}`);
-      if (!raw.ok) throw new Error(`Could not fetch ${name}@${version}/${path} (HTTP ${raw.status})`);
-      files[path] = await raw.text();
-    }),
-  );
-  return files;
-}
-
 /**
  * Install packages (and their transitive Elm dependencies) so the compiler can
  * import them, then rewrite the application `elm.json`.
  *
  * @param {object} compiler  a compiler from `createElmCompiler`
  * @param {string[]} specs   e.g. `["elm-community/maybe-extra@5.3.0", "mdgriffith/elm-ui"]`
+ * @param {object} [options]
+ * @param {string|string[]} [options.cdn]  source name(s)/template(s); default jsDelivr → GitHub
  * @returns {Promise<object>} the updated application elm.json
  */
-export async function installPackages(compiler, specs, { log = () => {} } = {}) {
+export async function installPackages(compiler, specs, { log = () => {}, cdn, sources = getSources(cdn) } = {}) {
   const base = JSON.parse(compiler.readText('/elm.json'));
   const direct = { ...base.dependencies.direct };
   const indirect = { ...base.dependencies.indirect };
-  // Packages shipped with the compiler's package artifacts — no need to fetch.
+  // Packages already shipped with the compiler's artifacts — no need to fetch.
   const preinstalled = new Set([...Object.keys(direct), ...Object.keys(indirect)]);
   const installed = new Set();
 
@@ -102,7 +90,8 @@ export async function installPackages(compiler, specs, { log = () => {} } = {}) 
     }
 
     log(`Installing ${name}@${version}…`);
-    const [elmJson, files] = await Promise.all([fetchElmJson(name, version), fetchSources(name, version)]);
+    const { elmJson, files, source } = await fetchPackage(name, version, { sources, log });
+    log(`  via ${source}`);
     compiler.installPackage({ name, version, elmJson, files });
     installed.add(name);
     if (isDirect) direct[name] = version;

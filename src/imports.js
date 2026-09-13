@@ -7,6 +7,7 @@
  * compiler nor package.elm-lang.org exposes it at runtime.
  */
 import { installPackages } from './packages.js';
+import { getSources } from './sources.js';
 
 /** Remove line and block comments so `import` inside them is ignored. */
 const stripComments = (source) => source.replace(/\{-[\s\S]*?-\}/g, ' ').replace(/--[^\n]*/g, ' ');
@@ -49,13 +50,13 @@ export function resolveImports({ imports, available, index }) {
  *
  * @returns {Promise<{ imports: string[], installed: string[], unresolved: string[] }>}
  */
-export async function autoInstallImports(compiler, source, { index, log = () => {} } = {}) {
+export async function autoInstallImports(compiler, source, { index, cdn, sources = getSources(cdn), log = () => {} } = {}) {
   const imports = detectImports(source);
   const available = compiler.listModules();
   const { needed, unresolved } = resolveImports({ imports, available, index });
 
   const specs = [...new Set(needed.map(({ package: pkg, version }) => `${pkg}@${version}`))];
-  if (specs.length) await installPackages(compiler, specs, { log });
+  if (specs.length) await installPackages(compiler, specs, { sources, log });
 
   return { imports, installed: specs, unresolved };
 }

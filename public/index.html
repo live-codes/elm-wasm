@@ -33,6 +33,15 @@
           placeholder="optional — imports are detected automatically (e.g. mdgriffith/elm-ui@1.1.8)"
         />
       </div>
+      <details class="import-map">
+        <summary>Import map (optional JSON)</summary>
+        <textarea
+          id="import-map"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder='{ "imports": { "Maybe.Extra": "https://cdn.jsdelivr.net/gh/elm-community/maybe-extra@5.3.0/src/Maybe/Extra.elm" } }'
+        ></textarea>
+      </details>
       <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
       <details class="logs">
         <summary>Compiler log</summary>

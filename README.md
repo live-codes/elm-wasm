@@ -19,8 +19,10 @@ Open the page, edit `Main.elm`, press **Run** (or Ctrl/⌘+Enter), and the compi
 - Full Elm **0.19.1** compilation (the real Elm compiler, not an interpreter) running as WebAssembly in the page.
 - A real app: the default example is a `Browser.sandbox` counter using `elm/browser` + `elm/html`, with working `onClick` events in the output iframe.
 - **Third-party packages, automatically**: just write `import Element` or `import Maybe.Extra` — imports are detected, resolved to packages via a module index, and installed into the compiler's virtual file system with no package list. A *Packages* field remains for manual overrides. See [Importing packages](#importing-packages).
+- **Configurable CDN sources**: packages come from jsDelivr by default (no GitHub API rate limits) with GitHub as a fallback; switch with `?cdn=github`, or point at any mirror via a URL template. See [Package sources](#package-sources-cdns).
+- **Import maps**: point individual modules at specific URLs with a small JSON map. See [Import maps](#import-maps).
 - Elm's rich, structured **compile errors** (rendered as readable text).
-- Everything is **isomorphic**: the exact same `src/compiler.js`, `src/packages.js`, and `src/imports.js` run in Node (`npm test`, `npm run test:imports`, `npm run test:packages`) and in the browser.
+- Everything is **isomorphic**: the same `src/compiler.js`, `src/sources.js`, `src/packages.js`, `src/imports.js` and `src/importmap.js` run in Node (`npm test`, `npm run test:imports`, `npm run test:packages`, `npm run test:sources`, `npm run test:importmap`) and in the browser.
 
 ## Quick start
 
@@ -38,6 +40,8 @@ Other scripts:
 | `npm test` | compiles `examples/counter.elm` in **Node** using the same code path the browser uses |
 | `npm run test:imports` | auto-detects imports, installs the packages, and compiles (Node) |
 | `npm run test:packages` | installs an explicitly-specified package from GitHub and compiles an importer (Node) |
+| `npm run test:sources` | checks the CDN chain, fallback, and URL → package parsing (Node) |
+| `npm run test:importmap` | checks that an import map URL actually overrides a module (Node) |
 | `npm run build:index` | rebuilds the module → package index (needs network; ~30s) |
 | `npm run build` | bundles `src/main.js` → `public/bundle.js` with esbuild |
 | `npm run serve` | serves `public/` with correct MIME types (`application/wasm`) |
@@ -105,7 +109,7 @@ Sample resolutions: `Html → elm/html`, `Parser → elm/parser`, `Maybe.Extra �
 
 ### 2. Installing the package
 
-`src/packages.js` fetches the package's `elm.json` and `src/` from GitHub (`raw.githubusercontent.com` plus the tree API — both send `Access-Control-Allow-Origin: *`), writes them under `/elm-home/0.19.1/packages/<author>/<pkg>/<version>/`, recurses into the package's Elm dependencies, and rewrites `/elm.json`. Precompiled `artifacts.dat` files are only a cache: when they are missing the compiler builds the package from source on first use.
+`src/packages.js` fetches the package's `elm.json` and `src/` through a CDN source (see below), writes them under `/elm-home/0.19.1/packages/<author>/<pkg>/<version>/`, recurses into the package's Elm dependencies, and rewrites `/elm.json`. Precompiled `artifacts.dat` files are only a cache: when they are missing the compiler builds the package from source on first use.
 
 You can still name packages explicitly (the **Packages** field, or the CLI args below) when you want a specific version or a module the index does not know:
 
@@ -118,6 +122,60 @@ npm run test:packages -- elm/parser@1.1.0   # a transitive elm/* package
 Verified automatically: `Element`, `Maybe.Extra`, `List.Extra`, `Json.Decode.Pipeline`. Verified explicitly: `mdgriffith/elm-ui` (1.1.8, ~100 source files) and `elm/parser` — an `elm/*` package that is *not* in the shipped artifacts, so it is fetched and compiled from source.
 
 **Caveats.** The index maps module → package and takes the latest version of the winner; it is not a version solver. Transitive dependencies reuse an installed version when it satisfies the constraint, otherwise the constraint's lower bound. Projects with conflicting diamond constraints need the real `elm` CLI — a production integration should pre-resolve and ship exact versions (see below).
+
+## Package sources (CDNs)
+
+Elm packages are just public Git repos, so anything that mirrors GitHub can serve them. `src/sources.js` models this as an ordered list of sources, each able to map `author/package@version/path` to a URL and (optionally) list a package's files:
+
+| source | file URL | listing |
+| --- | --- | --- |
+| `jsdelivr` *(default)* | `cdn.jsdelivr.net/gh/...` | `data.jsdelivr.com` API |
+| `github` *(fallback)* | `raw.githubusercontent.com/...` | GitHub tree API |
+| `statically` | `cdn.statically.io/gh/...` | — (paths derived from `exposed-modules`) |
+| `fastly.jsdelivr`, `gcore.jsdelivr`, `jsdelivr.b-cdn` | other jsDelivr edges | jsDelivr API |
+
+All of these send `Access-Control-Allow-Origin: *`, so this works from the browser.
+
+- The **default chain is `jsdelivr → github`**. jsDelivr has a real file-listing API and is not subject to the 60-requests/hour unauthenticated GitHub rate limit, so it goes first; GitHub catches anything jsDelivr cannot serve (it also handles packages whose repo is private/renamed — `fetchPackage` moves to the next source on any error).
+- **Choose a source** with the `?cdn=` query parameter (`?cdn=github`, `?cdn=statically`) — the chosen source goes first and the defaults remain as fallbacks.
+- Or pass a **URL template** — `?cdn=https://my.mirror/{name}@{version}/{path}` — where `{name}` is `author/package`, `{version}` the version, and `{path}` the file path. Templates have no listing API, so file paths are derived from the package's `exposed-modules`.
+
+```bash
+npm run test:sources
+```
+
+## Import maps
+
+An import map is JSON that points modules at specific URLs — useful for pinning a module to a fork, a commit, or your own host:
+
+```json
+{
+  "imports": {
+    "Maybe.Extra": "https://cdn.jsdelivr.net/gh/elm-community/maybe-extra@5.3.0/src/Maybe/Extra.elm",
+    "Element": {
+      "url": "https://example.com/forks/Element.elm",
+      "package": "mdgriffith/elm-ui",
+      "version": "1.1.8"
+    }
+  }
+}
+```
+
+Paste it into the **Import map** panel (or pass the object/JSON to `installFromImportMap`). For each entry, the module's file is fetched from the URL and written over the installed package's copy.
+
+One wrinkle: the Elm compiler only accepts imports that come from an installed **package**, and it validates `author/name@version` against its registry — so a bare URL is not enough on its own (a module dropped into the source directory is *not* importable; the compiler does not scan it). Each entry therefore needs a published package identity, which we resolve in this order:
+
+1. explicit `package` / `version` fields in the entry;
+2. parsed from the URL, when it is a known GitHub mirror (`cdn.jsdelivr.net/gh/<name>@<version>/...`, `raw.githubusercontent.com/<name>/<version>/...`, `cdn.statically.io/gh/...`);
+3. the module index (for a plain `data:` or custom URL whose module is a published one).
+
+The package is then installed via the CDN chain and the mapped module's file is replaced with the URL's content.
+
+```bash
+npm run test:importmap
+```
+
+That test patches `Maybe.Extra` so it additionally exposes a `sentinel` string and serves it from a `data:` URL; the compiled JavaScript contains the sentinel, proving the override was used.
 
 ## Assets
 
@@ -153,7 +211,8 @@ I evaluated the other ways to compile Elm in a browser before settling on this o
 ## Limitations / rough edges
 
 - **Single module.** `compile(source)` compiles one module (with access to the installed packages). Multi-file projects would need the FS (`/src`) populated with several files — the plumbing is already there.
-- **Package resolution is naive** (see [Importing packages](#importing-packages)): the index picks the latest version of the package that exposes a module, there is no version solver, and packages are fetched from GitHub at runtime (fine for a PoC, but subject to GitHub's unauthenticated rate limit and to the package being published on GitHub).
+- **Package resolution is naive** (see [Importing packages](#importing-packages)): the index picks the latest version of the package that exposes a module, and there is no version solver. Packages are fetched from a CDN at runtime (jsDelivr by default, GitHub fallback — see [Package sources](#package-sources-cdns)), so it needs network and the package published on a GitHub-mirrored repo.
+- **Import maps need a published package identity** (see [Import maps](#import-maps)): the compiler validates `author/name@version` against its registry, so a URL for a module belonging to no published package cannot be imported.
 - **The compiler binary ships ~13 `elm/*` packages.** Anything else is fetched on demand; packages with native kernel code can only be official `elm/*` ones anyway.
 - **The module index is a build step** (`npm run build:index`) and covers Elm 0.19 packages only. Without it, imports are not auto-installed and the *Packages* field must be used.
 - **~12 MB compiler download**, cached by the browser thereafter. It loads in a fraction of a second locally and compiles the counter in well under a second.
@@ -166,7 +225,7 @@ LiveCodes already has the right seam for this: [`@live-codes/browser-compilers`]
 1. **Build & host the compiler.** Add the Elm WASM compiler + JSFFI glue + package artifacts to the `browser-compilers` repo (built by tag/commit), published to the CDN like the other compilers. This removes the dependency on `elm.run` and pins a specific Elm version.
 2. **Thin loader.** Port `src/compiler.js` into a `browser-compilers` entry (e.g. `elm.ts`) exposing `loadElm()` / `elm.compile(code)`. Keep the WASI shim and tarball unpacking there; they are the only Elm-specific machinery.
 3. **Worker.** Run the compiler in a Web Worker (as LiveCodes does for other heavy compilers) so the 12 MB module and compilation never block the UI. Load lazily on first Elm compile.
-4. **Packages.** The GitHub-at-runtime approach is fine for a PoC but not for production. Pre-resolve dependencies with the official `elm` CLI at build time and ship the exact set (sources + artifacts) as a tarball on the CDN, or front GitHub with our own CORS proxy/cache in the `browser-compilers` service. Ship `elm-modules-index.json` alongside the compiler so imports can be auto-resolved without hitting package.elm-lang.org.
+4. **Packages.** Runtime CDN fetches are fine for a PoC but not for production. Pre-resolve dependencies with the official `elm` CLI at build time and ship the exact set (sources + artifacts) as a tarball on the CDN, or route through our own CORS proxy/cache — the `cdn` option already makes the source pluggable. Ship `elm-modules-index.json` alongside the compiler so imports can be auto-resolved without hitting package.elm-lang.org, and let users pin individual modules with import maps.
 5. **Language config in LiveCodes.** Register `elm` in the `Language` enum / languages map with `title`, `extensions: ['.elm']`, `editorLanguage: 'elm'` (Monaco's built-in `elm` language), and a `compile` hook that calls the worker and returns the generated JS.
 6. **Run the output.** Elm emits a self-contained JS bundle that initializes `Elm.Main`; mount it into the preview iframe the way other compiled languages do. Errors map cleanly onto LiveCodes' error reporting since the compiler already returns structured `{ title, region, message }` problems.
 7. **Docs & tests.** Add an "Elm" page under `docs/docs/languages/**`, a starter template, and a compiler test in the same place the other languages are tested.
@@ -177,8 +236,10 @@ The nice property of this design: LiveCodes' `compile` contract is just *source 
 
 ```
 src/compiler.js        environment-agnostic compiler core (WASI FS + compile)
-src/packages.js        client-side Elm package installer (GitHub-backed)
+src/sources.js         package sources (jsDelivr / GitHub / statically / templates)
+src/packages.js        package installer + transitive dependencies
 src/imports.js         import detection + module -> package resolution
+src/importmap.js       import maps (module -> URL)
 src/main.js            browser playground UI
 public/index.html      the page
 public/styles.css
@@ -188,6 +249,8 @@ scripts/build-module-index.mjs   builds the module -> package index
 scripts/test-compile.mjs   Node smoke test (single module)
 scripts/test-imports.mjs   Node smoke test (automatic imports)
 scripts/test-packages.mjs  Node smoke test (explicit package install)
+scripts/test-sources.mjs   Node smoke test (CDN chain + fallback)
+scripts/test-importmap.mjs Node smoke test (import map override)
 scripts/build.mjs          esbuild bundle
 scripts/serve.mjs          static server with application/wasm
 examples/counter.elm

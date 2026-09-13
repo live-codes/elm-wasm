@@ -12,7 +12,9 @@
     "start": "node scripts/build.mjs && node scripts/serve.mjs",
     "test": "node scripts/test-compile.mjs",
     "test:packages": "node scripts/test-packages.mjs",
-    "test:imports": "node scripts/test-imports.mjs"
+    "test:imports": "node scripts/test-imports.mjs",
+    "test:sources": "node scripts/test-sources.mjs",
+    "test:importmap": "node scripts/test-importmap.mjs"
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.2",

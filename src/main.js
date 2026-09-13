@@ -1,6 +1,12 @@
 import { createElmCompiler, wrapJsInHtml } from './compiler.js';
 import { installPackages } from './packages.js';
 import { autoInstallImports } from './imports.js';
+import { installFromImportMap, parseImportMap } from './importmap.js';
+import { getSources } from './sources.js';
+
+// Package source chain: `?cdn=github` (or a URL template) overrides the default
+// jsDelivr -> GitHub fallback. See sources.js.
+const sources = getSources(new URLSearchParams(location.search).get('cdn'));
 
 const DEFAULT_SOURCE = `module Main exposing (main)
 
@@ -43,6 +49,7 @@ view model =
 const els = {
   editor: document.getElementById('editor'),
   packages: document.getElementById('packages'),
+  importMap: document.getElementById('import-map'),
   run: document.getElementById('run'),
   reset: document.getElementById('reset'),
   status: document.getElementById('status'),
@@ -54,6 +61,7 @@ let compilerPromise = null;
 let moduleIndexPromise = null;
 let outputUrl = null;
 let installedPackagesKey = null;
+let installedImportMapKey = null;
 
 function log(message) {
   const line = document.createElement('div');
@@ -147,9 +155,26 @@ async function ensurePackages(compiler) {
   if (!raw || raw === installedPackagesKey) return;
   const specs = raw.split(/[\s,]+/).filter(Boolean);
   setStatus('Installing packages…', 'busy');
-  await installPackages(compiler, specs, { log });
+  await installPackages(compiler, specs, { sources, log });
   installedPackagesKey = raw;
   log(`Installed: ${specs.join(', ')}`);
+}
+
+/** Apply the import map, if one was provided (once per change). */
+async function applyImportMap(compiler, index) {
+  const raw = els.importMap?.value.trim() ?? '';
+  if (!raw || raw === installedImportMapKey) return;
+  const entries = parseImportMap(raw); // validate early so bad JSON is reported clearly
+  setStatus('Applying import map…', 'busy');
+  const { installed, overridden, unresolved } = await installFromImportMap(compiler, entries, {
+    index,
+    sources,
+    log,
+  });
+  installedImportMapKey = raw;
+  if (installed.length) log(`Import map installed: ${installed.join(', ')}`);
+  if (overridden.length) log(`Import map overrides: ${overridden.join(', ')}`);
+  if (unresolved.length) log(`Import map unresolved: ${unresolved.join(', ')}`);
 }
 
 /** Lazily load the module -> package index (optional; `npm run build:index`). */
@@ -161,15 +186,17 @@ function getModuleIndex() {
   return moduleIndexPromise;
 }
 
-/** Install any packages the source imports but that aren't available yet. */
-async function autoInstallFromSource(compiler) {
+/** Apply the import map, then install any packages the source imports. */
+async function resolveModules(compiler) {
   const index = await getModuleIndex();
+  await applyImportMap(compiler, index);
+
   if (!index) {
     log('No module index found — run `npm run build:index` to auto-install imports.');
     return;
   }
   setStatus('Checking imports…', 'busy');
-  const { installed, unresolved } = await autoInstallImports(compiler, els.editor.value, { index, log });
+  const { installed, unresolved } = await autoInstallImports(compiler, els.editor.value, { index, sources, log });
   if (installed.length) log(`Auto-installed: ${installed.join(', ')}`);
   if (unresolved.length) log(`Could not resolve imports: ${unresolved.join(', ')}`);
 }
@@ -179,7 +206,7 @@ async function run() {
   try {
     const compiler = await getCompiler();
     await ensurePackages(compiler);
-    await autoInstallFromSource(compiler);
+    await resolveModules(compiler);
     setStatus('Compiling…', 'busy');
     const started = performance.now();
     const result = await compiler.compile(els.editor.value);
