@@ -1,0 +1,5 @@
+node_modules/
+public/assets/ulm.wasm
+public/assets/*.tar.gz
+public/bundle.js
+public/bundle.js.map

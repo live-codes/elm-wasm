@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Elm in the browser — PoC</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Elm in the browser</h1>
+    <p class="subtitle">
+      A proof of concept that compiles Elm to JavaScript entirely client-side — no server round-trip.
+    </p>
+    <div class="controls">
+      <button id="run">Run ▸</button>
+      <span class="hint">Ctrl/⌘ + Enter</span>
+      <button id="reset" class="secondary">Reset</button>
+      <span id="status" class="status">Loading…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="pane editor-pane">
+      <h2>Main.elm</h2>
+      <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
+      <details class="logs">
+        <summary>Compiler log</summary>
+        <div id="logs"></div>
+      </details>
+    </section>
+
+    <section class="pane preview-pane">
+      <h2>Output</h2>
+      <iframe id="output" title="Compiled Elm output" sandbox="allow-scripts allow-same-origin allow-modals"></iframe>
+    </section>
+  </main>
+
+  <script type="module" src="./bundle.js"></script>
+</body>
+</html>
