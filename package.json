@@ -7,6 +7,10 @@
   "scripts": {
     "fetch-assets": "node scripts/fetch-assets.mjs",
     "build:index": "node scripts/build-module-index.mjs",
+    "build:compiler": "bash compiler/build.sh",
+    "install:toolchain": "bash compiler/install-toolchain.sh",
+    "check:pins": "node scripts/update-compiler-pins.mjs --check",
+    "update:pins": "node scripts/update-compiler-pins.mjs --write",
     "build": "node scripts/build.mjs",
     "serve": "node scripts/serve.mjs",
     "start": "node scripts/build.mjs && node scripts/serve.mjs",

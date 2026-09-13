@@ -179,7 +179,7 @@ That test patches `Maybe.Extra` so it additionally exposes a `sentinel` string a
 
 ## Assets
 
-`npm run fetch-assets` downloads four files into `public/assets/` (git-ignored):
+`npm run fetch-assets` puts four files into `public/assets/` (git-ignored). The compiler binaries come from a local build (`--local`), a released build (`--base <url>`), or the elm.run fallback — in that order (see [Where the binaries come from](#where-the-binaries-come-from)):
 
 | file | size | purpose |
 | --- | --- | --- |
@@ -192,12 +192,26 @@ Sources and artifacts are complementary: the tarball of sources gives the compil
 
 ### Where the binaries come from
 
-Building the compiler to WASM needs a GHC WebAssembly cross-compiler plus a WASI sysroot, which is out of scope for a PoC. These binaries are therefore reused from the [elm.run](https://github.com/marc136/elm.run) project by [@marc136](https://github.com/marc136):
+The compiler binaries are **built by this repo**, not taken from a third party. `compiler/` is a small pipeline that compiles the wasm port of the Elm compiler ([marc136/elm-compiler-wasm](https://github.com/marc136/elm-compiler-wasm), a fork of [elm/compiler](https://github.com/elm/compiler), BSD-3-Clause) to WASI using the GHC WebAssembly backend:
 
-- `ulm.wasm` / `ulm.js` — <https://elm.run/ulm.wasm>, <https://elm.run/ulm.js>
-- the tarballs — <https://elm.run/elm-init.tar.gz>, <https://elm.run/elm-all-examples-package-artifacts.tar.gz>
+| asset | where it comes from |
+| --- | --- |
+| `ulm.wasm`, `ulm.js` | **built by `compiler/`** from the commit pinned in `compiler/versions.env` — `npm run build:compiler`, or the CI workflow |
+| `elm-modules-index.json` | generated from package.elm-lang.org — `npm run build:index` |
+| `elm-init.tar.gz` | an `elm init` snapshot: package sources + registry |
+| `elm-all-examples-package-artifacts.tar.gz` | precompiled `artifacts.dat` for the standard `elm/*` packages |
 
-The compiler itself is a fork of the official [elm/compiler](https://github.com/elm/compiler) (BSD-3-Clause); the wasm port lives at [marc136/elm-compiler-wasm](https://github.com/marc136/elm-compiler-wasm). **For a real integration these artifacts must be built and hosted by us** (see below), with the Elm compiler's BSD-3 license and attribution preserved — treat this PoC's binaries as a stopgap for evaluating feasibility, not as something to ship.
+`npm run fetch-assets` looks for the compiler binaries in a local build (`--local`), then a released build (`--base <url>`), then the elm.run fallback; the two data tarballs use the same chain. So the PoC keeps working while our own build is produced, and moves off the fallback once a release exists.
+
+Updating is a pin bump plus a rebuild:
+
+```bash
+npm run check:pins      # are the pinned upstream commits stale?
+npm run update:pins     # bump compiler/versions.env
+npm run build:compiler  # rebuild ulm.wasm + ulm.js (needs the GHC wasm toolchain)
+```
+
+CI does both halves: `.github/workflows/build-compiler.yml` builds and publishes a release, and `update-compiler-pins.yml` opens a weekly PR when the upstream commits move. See [compiler/README.md](./compiler/README.md) for the build details, the update flow, and the GHC-flavour caveat. The Elm compiler's BSD-3 licence and attribution must be preserved in any distribution.
 
 ## Why not the other options
 
@@ -222,7 +236,7 @@ I evaluated the other ways to compile Elm in a browser before settling on this o
 
 LiveCodes already has the right seam for this: [`@live-codes/browser-compilers`](../../live-codes/browser-compilers) hosts in-browser compilers on a CDN, and language definitions declare which scripts to load. A concrete plan:
 
-1. **Build & host the compiler.** Add the Elm WASM compiler + JSFFI glue + package artifacts to the `browser-compilers` repo (built by tag/commit), published to the CDN like the other compilers. This removes the dependency on `elm.run` and pins a specific Elm version.
+1. **Build & host the compiler.** Use the `compiler/` pipeline to build `ulm.wasm` + `ulm.js` from a pinned commit and publish them as a release, then host them on the CDN like the other compilers. This removes the elm.run fallback and pins a specific Elm version.
 2. **Thin loader.** Port `src/compiler.js` into a `browser-compilers` entry (e.g. `elm.ts`) exposing `loadElm()` / `elm.compile(code)`. Keep the WASI shim and tarball unpacking there; they are the only Elm-specific machinery.
 3. **Worker.** Run the compiler in a Web Worker (as LiveCodes does for other heavy compilers) so the 12 MB module and compilation never block the UI. Load lazily on first Elm compile.
 4. **Packages.** Runtime CDN fetches are fine for a PoC but not for production. Pre-resolve dependencies with the official `elm` CLI at build time and ship the exact set (sources + artifacts) as a tarball on the CDN, or route through our own CORS proxy/cache — the `cdn` option already makes the source pluggable. Ship `elm-modules-index.json` alongside the compiler so imports can be auto-resolved without hitting package.elm-lang.org, and let users pin individual modules with import maps.
@@ -244,8 +258,11 @@ src/main.js            browser playground UI
 public/index.html      the page
 public/styles.css
 public/assets/         downloaded/generated assets (git-ignored)
+compiler/              builds ulm.wasm + ulm.js (see compiler/README.md)
+.github/workflows/     CI: build & release binaries, weekly pin bump
 scripts/fetch-assets.mjs
-scripts/build-module-index.mjs   builds the module -> package index
+scripts/build-module-index.mjs     builds the module -> package index
+scripts/update-compiler-pins.mjs   checks/bumps the pinned upstream commits
 scripts/test-compile.mjs   Node smoke test (single module)
 scripts/test-imports.mjs   Node smoke test (automatic imports)
 scripts/test-packages.mjs  Node smoke test (explicit package install)

@@ -1,46 +1,89 @@
 /**
- * Downloads the prebuilt Elm compiler assets used by the PoC.
+ * Downloads (or copies) the assets the PoC needs into public/assets.
  *
- * The Elm compiler is written in Haskell; building it to WASM by hand needs a
- * GHC WebAssembly cross-compiler plus a WASI sysroot. For a proof of concept we
- * reuse the binaries published by the elm.run project (https://github.com/marc136/elm.run),
- * which is a fork of the official compiler (BSD-3-Clause) built for this exact
- * purpose. See README.md for the licensing/integration discussion.
+ * The compiler binaries (`ulm.wasm`, `ulm.js`) are built by `compiler/` — see
+ * compiler/README.md. This script picks them up from, in order:
+ *
+ *   1. a local build in compiler/out/           (--local)
+ *   2. a base URL, e.g. a release or CDN        (--base <url>, or ELM_ASSETS_BASE)
+ *   3. the elm.run fallback                     (https://elm.run)
+ *
+ * The two package-data tarballs are always URLs (they are not compiler
+ * binaries); they use the same base/fallback chain.
+ *
+ *   node scripts/fetch-assets.mjs [--force] [--local] [--base <url>]
  */
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const assetsDir = path.join(root, 'public', 'assets');
-const base = (process.env.ELM_RUN_BASE || 'https://elm.run').replace(/\/$/, '');
+const localDir = path.join(root, 'compiler', 'out');
+
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const useLocal = args.includes('--local');
+const baseArg = args.indexOf('--base');
+const base = ((baseArg === -1 ? process.env.ELM_ASSETS_BASE : args[baseArg + 1]) || '').replace(/\/$/, '');
+const fallbackBase = (process.env.ELM_RUN_BASE || 'https://elm.run').replace(/\/$/, '');
 
 const files = [
-  ['ulm.wasm', `${base}/ulm.wasm`, 'the Elm compiler (WASM, ~12 MB)'],
-  ['ulm.js', `${base}/ulm.js`, 'GHC JSFFI glue for the compiler'],
-  ['elm-init.tar.gz', `${base}/elm-init.tar.gz`, 'Elm package sources + registry'],
-  [
-    'elm-all-examples-package-artifacts.tar.gz',
-    `${base}/elm-all-examples-package-artifacts.tar.gz`,
-    'precompiled Elm package artifacts',
-  ],
+  { name: 'ulm.wasm', local: true, description: 'the Elm compiler (WASM, ~12 MB)' },
+  { name: 'ulm.js', local: true, description: 'GHC JSFFI glue for the compiler' },
+  { name: 'elm-init.tar.gz', description: 'Elm package sources + registry' },
+  {
+    name: 'elm-all-examples-package-artifacts.tar.gz',
+    description: 'precompiled Elm package artifacts',
+  },
 ];
+
+/** Where an asset can come from, best first. */
+function candidates(file) {
+  const list = [];
+  if (useLocal && file.local) list.push({ from: path.join(localDir, file.name), kind: 'file' });
+  if (base) list.push({ from: `${base}/${file.name}`, kind: 'url' });
+  list.push({ from: `${fallbackBase}/${file.name}`, kind: 'url' });
+  return list;
+}
+
+async function read(from, kind) {
+  if (kind === 'file') {
+    const info = await stat(from);
+    if (!info.isFile()) throw new Error('not a file');
+    return readFile(from);
+  }
+  const res = await fetch(from);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
 
 await mkdir(assetsDir, { recursive: true });
 
-for (const [name, url, description] of files) {
-  const dest = path.join(assetsDir, name);
+for (const file of files) {
+  const dest = path.join(assetsDir, file.name);
   const existing = await stat(dest).catch(() => null);
-  if (existing && existing.size > 0 && !process.argv.includes('--force')) {
-    console.log(`skip  ${name} (already present, ${existing.size} bytes)`);
+  if (existing?.size > 0 && !force) {
+    console.log(`skip  ${file.name} (already present, ${existing.size} bytes)`);
     continue;
   }
-  process.stdout.write(`fetch ${name} — ${description} ... `);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  await writeFile(dest, buf);
-  console.log(`ok (${buf.length} bytes)`);
+
+  let written = null;
+  const errors = [];
+  for (const { from, kind } of candidates(file)) {
+    try {
+      const buf = await read(from, kind);
+      await writeFile(dest, buf);
+      written = { from, size: buf.length };
+      break;
+    } catch (err) {
+      errors.push(`${from}: ${err.message}`);
+    }
+  }
+
+  if (!written) throw new Error(`Could not obtain ${file.name}\n  ${errors.join('\n  ')}`);
+  console.log(`fetch ${file.name} (${file.description})`);
+  console.log(`      ← ${written.from} (${written.size} bytes)`);
 }
 
 console.log(`\nAssets are in ${assetsDir}`);

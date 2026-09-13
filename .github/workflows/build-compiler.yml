@@ -1,0 +1,101 @@
+name: Build compiler binaries
+
+# Builds ulm.wasm (the Elm compiler compiled to WASI) from the commit pinned in
+# compiler/versions.env. See compiler/README.md.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, develop]
+    tags: ['compiler-v*']
+    paths:
+      - 'compiler/**'
+      - 'scripts/update-compiler-pins.mjs'
+      - '.github/workflows/build-compiler.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned versions
+        id: pins
+        run: |
+          set -a; . compiler/versions.env; set +a
+          echo "meta_ref=$GHC_WASM_META_REF" >> "$GITHUB_OUTPUT"
+          echo "flavour=$GHC_WASM_FLAVOUR" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Elm compiler (wasm)"
+            echo ""
+            echo "| pin | value |"
+            echo "| --- | --- |"
+            echo "| fork commit | \`$ELM_WASM_COMMIT\` |"
+            echo "| elm-src commit | \`$ELM_SRC_COMMIT\` |"
+            echo "| ghc-wasm-meta | \`$GHC_WASM_META_REF\` (GHC $GHC_WASM_FLAVOUR) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install toolchain prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq unzip zstd python3
+
+      - name: Cache GHC wasm toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.ghc-wasm
+          key: ghc-wasm-${{ runner.os }}-${{ runner.arch }}-${{ steps.pins.outputs.meta_ref }}-${{ steps.pins.outputs.flavour }}
+
+      - name: Install GHC wasm toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: ./compiler/install-toolchain.sh
+
+      - name: Add toolchain to PATH
+        run: source ~/.ghc-wasm/add_to_github_path.sh
+
+      - name: Build ulm.wasm
+        run: ./compiler/build.sh
+
+      - name: Verify the module loads
+        run: |
+          node -e "
+            const fs = require('fs');
+            const bytes = fs.readFileSync('compiler/out/ulm.wasm');
+            WebAssembly.compile(bytes).then((m) => {
+              const ex = WebAssembly.Module.exports(m).map((e) => e.name);
+              if (!ex.includes('compile')) throw new Error('ulm.wasm has no compile export: ' + ex.join(','));
+              console.log('ulm.wasm OK —', bytes.length, 'bytes, exports:', ex.slice(0, 8).join(', '), '...');
+            });
+          "
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build the module index
+        run: npm ci && npm run build:index
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist-assets
+          cp compiler/out/ulm.wasm compiler/out/ulm.js dist-assets/
+          cp compiler/versions.env dist-assets/PINS.env
+          cp public/assets/elm-modules-index.json dist-assets/
+          (cd dist-assets && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elm-compiler-wasm
+          path: dist-assets/
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/compiler-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-assets/*
+          generate_release_notes: true

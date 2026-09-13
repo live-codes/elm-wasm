@@ -1,0 +1,60 @@
+name: Update compiler pins
+
+# Weekly check for new upstream commits in the wasm port of the Elm compiler.
+# If the pinned commits in compiler/versions.env are stale, opens a PR with the
+# bump. Merging that PR triggers the build workflow, which republishes the
+# binaries — that is the "update" half of the pipeline.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check for newer upstream commits
+        id: check
+        run: |
+          if node scripts/update-compiler-pins.mjs --check > pins.txt 2>&1; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat pins.txt
+
+      - name: Bump pins
+        if: steps.check.outputs.stale == 'true'
+        run: node scripts/update-compiler-pins.mjs --write
+
+      - name: Open pull request
+        if: steps.check.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="chore/update-compiler-pins"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add compiler/versions.env
+          git commit -m "chore(compiler): bump wasm build pins"
+          git push --force-with-lease origin "$branch"
+
+          body="$(printf 'Automated bump of the pinned upstream commits.\n\n```\n%s\n```\n\nMerging this triggers the *Build compiler binaries* workflow.\n' "$(cat pins.txt)")"
+          gh pr create \
+            --title "chore(compiler): bump wasm build pins" \
+            --body "$body" \
+            --head "$branch" \
+            || echo "PR already open"
