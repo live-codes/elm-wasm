@@ -1,4 +1,5 @@
 import { createElmCompiler, wrapJsInHtml } from './compiler.js';
+import { installPackages } from './packages.js';
 
 const DEFAULT_SOURCE = `module Main exposing (main)
 
@@ -40,6 +41,7 @@ view model =
 
 const els = {
   editor: document.getElementById('editor'),
+  packages: document.getElementById('packages'),
   run: document.getElementById('run'),
   reset: document.getElementById('reset'),
   status: document.getElementById('status'),
@@ -49,6 +51,7 @@ const els = {
 
 let compilerPromise = null;
 let outputUrl = null;
+let installedPackagesKey = null;
 
 function log(message) {
   const line = document.createElement('div');
@@ -136,10 +139,22 @@ pre { white-space: pre-wrap; line-height: 1.45; }
 </style></head>
 <body><h2>Compilation failed</h2><pre>${escapeHtml(formatElmErrors(result))}</pre></body></html>`;
 
+/** Install any packages named in the Packages field (once per change). */
+async function ensurePackages(compiler) {
+  const raw = els.packages?.value.trim() ?? '';
+  if (!raw || raw === installedPackagesKey) return;
+  const specs = raw.split(/[\s,]+/).filter(Boolean);
+  setStatus('Installing packages…', 'busy');
+  await installPackages(compiler, specs, { log });
+  installedPackagesKey = raw;
+  log(`Installed: ${specs.join(', ')}`);
+}
+
 async function run() {
   els.run.disabled = true;
   try {
     const compiler = await getCompiler();
+    await ensurePackages(compiler);
     setStatus('Compiling…', 'busy');
     const started = performance.now();
     const result = await compiler.compile(els.editor.value);

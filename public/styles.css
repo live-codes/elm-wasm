@@ -73,6 +73,29 @@ main {
 
 .pane { display: flex; flex-direction: column; min-height: 0; padding: 10px 12px; background: var(--bg); }
 
+.packages-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.packages-row label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+#packages {
+  flex: 1;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+}
+
 #editor {
   flex: 1;
   min-height: 0;

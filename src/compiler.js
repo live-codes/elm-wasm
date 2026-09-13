@@ -233,7 +233,42 @@ export async function createElmCompiler({
     return fs.prestat_name + withIndent(1, fs.dir);
   }
 
-  return { compile, readFile, readText, printFs, fs, pkgDir, exports: wasmExports };
+  /**
+   * Install an Elm package into the virtual file system so the compiler can
+   * import it. `files` maps paths relative to the package root (e.g.
+   * `"src/Maybe/Extra.elm"`) to their contents.
+   *
+   * Artifacts are optional: if a package has no precompiled `artifacts.dat`,
+   * the compiler builds it from these sources on first use.
+   */
+  function installPackage({ name, version, elmJson, files = {} }) {
+    const base = `/elm-home/0.19.1/packages/${name}/${version}`;
+    writeFile(`${base}/elm.json`, typeof elmJson === 'string' ? elmJson : JSON.stringify(elmJson, null, 4));
+    for (const [relativePath, content] of Object.entries(files)) {
+      writeFile(`${base}/${relativePath}`, content);
+    }
+    return base;
+  }
+
+  /** Replace the application manifest the compiler reads at `/elm.json`. */
+  function setApplicationElmJson(elmJson, filepath = '/elm.json') {
+    writeFile(filepath, typeof elmJson === 'string' ? elmJson : JSON.stringify(elmJson, null, 4));
+  }
+
+  return {
+    compile,
+    readFile,
+    readText,
+    writeFile,
+    createDir,
+    unpackInto,
+    installPackage,
+    setApplicationElmJson,
+    printFs,
+    fs,
+    pkgDir,
+    exports: wasmExports,
+  };
 }
 
 function toUint8Array(bytes) {
