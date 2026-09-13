@@ -6,11 +6,13 @@
   "description": "Proof of concept: compiling Elm to JavaScript entirely in the browser (for a future LiveCodes integration).",
   "scripts": {
     "fetch-assets": "node scripts/fetch-assets.mjs",
+    "build:index": "node scripts/build-module-index.mjs",
     "build": "node scripts/build.mjs",
     "serve": "node scripts/serve.mjs",
     "start": "node scripts/build.mjs && node scripts/serve.mjs",
     "test": "node scripts/test-compile.mjs",
-    "test:packages": "node scripts/test-packages.mjs"
+    "test:packages": "node scripts/test-packages.mjs",
+    "test:imports": "node scripts/test-imports.mjs"
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.2",

@@ -18,15 +18,16 @@ Open the page, edit `Main.elm`, press **Run** (or Ctrl/⌘+Enter), and the compi
 
 - Full Elm **0.19.1** compilation (the real Elm compiler, not an interpreter) running as WebAssembly in the page.
 - A real app: the default example is a `Browser.sandbox` counter using `elm/browser` + `elm/html`, with working `onClick` events in the output iframe.
-- **Third-party packages**: name them in the *Packages* field (e.g. `mdgriffith/elm-ui`) and they are fetched and installed into the compiler's virtual file system — no server involved. See [Importing packages](#importing-packages).
+- **Third-party packages, automatically**: just write `import Element` or `import Maybe.Extra` — imports are detected, resolved to packages via a module index, and installed into the compiler's virtual file system with no package list. A *Packages* field remains for manual overrides. See [Importing packages](#importing-packages).
 - Elm's rich, structured **compile errors** (rendered as readable text).
-- Everything is **isomorphic**: the exact same `src/compiler.js` / `src/packages.js` run in Node (`npm test`, `npm run test:packages`) and in the browser.
+- Everything is **isomorphic**: the exact same `src/compiler.js`, `src/packages.js`, and `src/imports.js` run in Node (`npm test`, `npm run test:imports`, `npm run test:packages`) and in the browser.
 
 ## Quick start
 
 ```bash
 npm install
 npm run fetch-assets   # downloads the compiler assets (~12 MB, see "Assets" below)
+npm run build:index    # builds the module -> package index for automatic imports (~30s)
 npm start              # builds the bundle and serves http://localhost:8080
 ```
 
@@ -35,7 +36,9 @@ Other scripts:
 | script | what it does |
 | --- | --- |
 | `npm test` | compiles `examples/counter.elm` in **Node** using the same code path the browser uses |
-| `npm run test:packages` | installs a package from GitHub and compiles an importer in Node |
+| `npm run test:imports` | auto-detects imports, installs the packages, and compiles (Node) |
+| `npm run test:packages` | installs an explicitly-specified package from GitHub and compiles an importer (Node) |
+| `npm run build:index` | rebuilds the module → package index (needs network; ~30s) |
 | `npm run build` | bundles `src/main.js` → `public/bundle.js` with esbuild |
 | `npm run serve` | serves `public/` with correct MIME types (`application/wasm`) |
 | `npm run fetch-assets -- --force` | re-downloads the compiler assets |
@@ -80,26 +83,41 @@ and the older `{ type: "success" | "compile-errors", ... }` shape.
 
 ## Importing packages
 
-Yes. The compiler resolves dependencies from its virtual file system, so a package only has to be *put* there: its `elm.json` plus its `src/`. Precompiled `artifacts.dat` files are just a cache — when they are missing the compiler builds the package from source on first use.
+Yes — and the playground does it automatically: write `import Maybe.Extra`, press Run, and the PoC detects the import, resolves it to `elm-community/maybe-extra`, installs it, and compiles. No package list required.
 
-`src/packages.js` does the fetching, entirely client-side:
+There are two halves.
 
-1. For each spec (`author/package` or `author/package@1.2.3`), fetch the package's `elm.json` and file tree from GitHub (`raw.githubusercontent.com` + the GitHub tree API). Both send `Access-Control-Allow-Origin: *`, so this works from the browser.
-2. `installPackage()` writes them to `/elm-home/0.19.1/packages/<author>/<pkg>/<version>/`.
-3. Recurse into the package's Elm dependencies (`elm/*` packages shipped with the compiler artifacts are reused as-is).
-4. Rewrite `/elm.json` to list the new direct/indirect dependencies.
+### 1. Detecting imports and resolving them to packages
 
-In the playground, type specs into the **Packages** field (`elm-community/maybe-extra@5.3.0 mdgriffith/elm-ui`) and press Run. From Node:
+`src/imports.js` parses the `import` lines (comments stripped), maps each module to a package using `elm-modules-index.json`, and installs whatever is missing.
+
+The mapping is the awkward part. The Elm compiler only knows which modules *installed* packages expose, and package.elm-lang.org has neither a bulk `module → package` endpoint nor CORS headers — so `scripts/build-module-index.mjs` builds an index offline from every package's `elm.json`, then we ship it as a static asset:
+
+- only Elm 0.19 packages (this filters out the 0.18-era `elm-lang/*`, `evancz/*` packages);
+- several packages can expose the same module, so ties are broken by how many indexed packages depend on each candidate (a popularity proxy), then by officialness (`elm/*`, `elm-explorations/*`), then by name;
+- kernel packages need care: their `exposed-modules` is a map of kernel groups (`{"HTML": ["Html", "Html.Attributes", …]}`), not a list.
 
 ```bash
-npm run test:packages                       # elm-community/maybe-extra
-npm run test:packages -- mdgriffith/elm-ui  # latest version
+npm run build:index   # ~30s → public/assets/elm-modules-index.json (2042 packages, ~6100 modules, 0.3 MB)
+```
+
+Sample resolutions: `Html → elm/html`, `Parser → elm/parser`, `Maybe.Extra → elm-community/maybe-extra`, `Element → mdgriffith/elm-ui`, `Json.Decode.Pipeline → NoRedInk/elm-json-decode-pipeline`.
+
+### 2. Installing the package
+
+`src/packages.js` fetches the package's `elm.json` and `src/` from GitHub (`raw.githubusercontent.com` plus the tree API — both send `Access-Control-Allow-Origin: *`), writes them under `/elm-home/0.19.1/packages/<author>/<pkg>/<version>/`, recurses into the package's Elm dependencies, and rewrites `/elm.json`. Precompiled `artifacts.dat` files are only a cache: when they are missing the compiler builds the package from source on first use.
+
+You can still name packages explicitly (the **Packages** field, or the CLI args below) when you want a specific version or a module the index does not know:
+
+```bash
+npm run test:imports                        # fully automatic: derives packages from the imports
+npm run test:packages -- mdgriffith/elm-ui  # explicit spec
 npm run test:packages -- elm/parser@1.1.0   # a transitive elm/* package
 ```
 
-Verified: `elm-community/maybe-extra`, `mdgriffith/elm-ui` (1.1.8, ~100 source files), and `elm/parser` — an `elm/*` package that is *not* in the shipped artifacts, so it is fetched and compiled from source.
+Verified automatically: `Element`, `Maybe.Extra`, `List.Extra`, `Json.Decode.Pipeline`. Verified explicitly: `mdgriffith/elm-ui` (1.1.8, ~100 source files) and `elm/parser` — an `elm/*` package that is *not* in the shipped artifacts, so it is fetched and compiled from source.
 
-**This is not a full version solver.** It uses the version you ask for, and for transitive dependencies reuses an already-installed version when it satisfies the constraint, otherwise the constraint's lower bound. Projects with conflicting diamond constraints need more than that — a production integration should pre-resolve with the real `elm` CLI and ship exact versions (see below).
+**Caveats.** The index maps module → package and takes the latest version of the winner; it is not a version solver. Transitive dependencies reuse an installed version when it satisfies the constraint, otherwise the constraint's lower bound. Projects with conflicting diamond constraints need the real `elm` CLI — a production integration should pre-resolve and ship exact versions (see below).
 
 ## Assets
 
@@ -135,8 +153,9 @@ I evaluated the other ways to compile Elm in a browser before settling on this o
 ## Limitations / rough edges
 
 - **Single module.** `compile(source)` compiles one module (with access to the installed packages). Multi-file projects would need the FS (`/src`) populated with several files — the plumbing is already there.
-- **Package resolution is naive** (see [Importing packages](#importing-packages)): no full version solver, and packages are fetched from GitHub at runtime (fine for a PoC, but subject to GitHub's unauthenticated API rate limit and to the package being published from GitHub).
+- **Package resolution is naive** (see [Importing packages](#importing-packages)): the index picks the latest version of the package that exposes a module, there is no version solver, and packages are fetched from GitHub at runtime (fine for a PoC, but subject to GitHub's unauthenticated rate limit and to the package being published on GitHub).
 - **The compiler binary ships ~13 `elm/*` packages.** Anything else is fetched on demand; packages with native kernel code can only be official `elm/*` ones anyway.
+- **The module index is a build step** (`npm run build:index`) and covers Elm 0.19 packages only. Without it, imports are not auto-installed and the *Packages* field must be used.
 - **~12 MB compiler download**, cached by the browser thereafter. It loads in a fraction of a second locally and compiles the counter in well under a second.
 - **Verbose compiler logs.** The Elm compiler's stdout/stderr is routed to the collapsible "Compiler log" panel.
 
@@ -147,7 +166,7 @@ LiveCodes already has the right seam for this: [`@live-codes/browser-compilers`]
 1. **Build & host the compiler.** Add the Elm WASM compiler + JSFFI glue + package artifacts to the `browser-compilers` repo (built by tag/commit), published to the CDN like the other compilers. This removes the dependency on `elm.run` and pins a specific Elm version.
 2. **Thin loader.** Port `src/compiler.js` into a `browser-compilers` entry (e.g. `elm.ts`) exposing `loadElm()` / `elm.compile(code)`. Keep the WASI shim and tarball unpacking there; they are the only Elm-specific machinery.
 3. **Worker.** Run the compiler in a Web Worker (as LiveCodes does for other heavy compilers) so the 12 MB module and compilation never block the UI. Load lazily on first Elm compile.
-4. **Packages.** The GitHub-at-runtime approach is fine for a PoC but not for production. Pre-resolve dependencies with the official `elm` CLI at build time and ship the exact set (sources + artifacts) as a tarball on the CDN, or front GitHub with our own CORS proxy/cache in the `browser-compilers` service.
+4. **Packages.** The GitHub-at-runtime approach is fine for a PoC but not for production. Pre-resolve dependencies with the official `elm` CLI at build time and ship the exact set (sources + artifacts) as a tarball on the CDN, or front GitHub with our own CORS proxy/cache in the `browser-compilers` service. Ship `elm-modules-index.json` alongside the compiler so imports can be auto-resolved without hitting package.elm-lang.org.
 5. **Language config in LiveCodes.** Register `elm` in the `Language` enum / languages map with `title`, `extensions: ['.elm']`, `editorLanguage: 'elm'` (Monaco's built-in `elm` language), and a `compile` hook that calls the worker and returns the generated JS.
 6. **Run the output.** Elm emits a self-contained JS bundle that initializes `Elm.Main`; mount it into the preview iframe the way other compiled languages do. Errors map cleanly onto LiveCodes' error reporting since the compiler already returns structured `{ title, region, message }` problems.
 7. **Docs & tests.** Add an "Elm" page under `docs/docs/languages/**`, a starter template, and a compiler test in the same place the other languages are tested.
@@ -159,17 +178,20 @@ The nice property of this design: LiveCodes' `compile` contract is just *source 
 ```
 src/compiler.js        environment-agnostic compiler core (WASI FS + compile)
 src/packages.js        client-side Elm package installer (GitHub-backed)
+src/imports.js         import detection + module -> package resolution
 src/main.js            browser playground UI
 public/index.html      the page
 public/styles.css
-public/assets/         downloaded compiler assets (git-ignored)
+public/assets/         downloaded/generated assets (git-ignored)
 scripts/fetch-assets.mjs
+scripts/build-module-index.mjs   builds the module -> package index
 scripts/test-compile.mjs   Node smoke test (single module)
-scripts/test-packages.mjs  Node smoke test (package install)
+scripts/test-imports.mjs   Node smoke test (automatic imports)
+scripts/test-packages.mjs  Node smoke test (explicit package install)
 scripts/build.mjs          esbuild bundle
 scripts/serve.mjs          static server with application/wasm
 examples/counter.elm
-examples/with-package.elm  uses elm-community/maybe-extra
+examples/with-package.elm  imports elm-community/maybe-extra (auto-installed)
 ```
 
 ## Sources

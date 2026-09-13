@@ -234,6 +234,48 @@ export async function createElmCompiler({
   }
 
   /**
+   * List the packages currently visible to the compiler, with the modules each
+   * one exposes. This is everything needed to tell whether an `import` in the
+   * user's source is already satisfiable.
+   *
+   * @returns {{ name: string, version: string, modules: string[] }[]}
+   */
+  function listPackages() {
+    const packages = [];
+    for (const [author, authorDir] of pkgDir.contents) {
+      if (!(authorDir instanceof Directory)) continue;
+      for (const [pkg, versions] of authorDir.contents) {
+        if (!(versions instanceof Directory)) continue;
+        for (const [version, versionDir] of versions.contents) {
+          if (!(versionDir instanceof Directory)) continue;
+          const elmJsonFile = versionDir.contents.get('elm.json');
+          if (!(elmJsonFile instanceof File)) continue;
+          try {
+            const elmJson = JSON.parse(textDecoder.decode(elmJsonFile.data));
+            const exposed = elmJson['exposed-modules'];
+            packages.push({
+              name: `${author}/${pkg}`,
+              version,
+              // Kernel packages describe exposure as { kernelGroup: [modules] }.
+              modules: Array.isArray(exposed) ? exposed : Object.values(exposed ?? {}).flat(),
+            });
+          } catch {
+            // ignore unreadable manifests
+          }
+        }
+      }
+    }
+    return packages;
+  }
+
+  /** All module names available to the compiler right now. */
+  function listModules() {
+    const names = new Set();
+    for (const pkg of listPackages()) for (const m of pkg.modules) names.add(m);
+    return names;
+  }
+
+  /**
    * Install an Elm package into the virtual file system so the compiler can
    * import it. `files` maps paths relative to the package root (e.g.
    * `"src/Maybe/Extra.elm"`) to their contents.
@@ -264,6 +306,8 @@ export async function createElmCompiler({
     unpackInto,
     installPackage,
     setApplicationElmJson,
+    listPackages,
+    listModules,
     printFs,
     fs,
     pkgDir,

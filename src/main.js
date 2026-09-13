@@ -1,5 +1,6 @@
 import { createElmCompiler, wrapJsInHtml } from './compiler.js';
 import { installPackages } from './packages.js';
+import { autoInstallImports } from './imports.js';
 
 const DEFAULT_SOURCE = `module Main exposing (main)
 
@@ -50,6 +51,7 @@ const els = {
 };
 
 let compilerPromise = null;
+let moduleIndexPromise = null;
 let outputUrl = null;
 let installedPackagesKey = null;
 
@@ -150,11 +152,34 @@ async function ensurePackages(compiler) {
   log(`Installed: ${specs.join(', ')}`);
 }
 
+/** Lazily load the module -> package index (optional; `npm run build:index`). */
+function getModuleIndex() {
+  moduleIndexPromise ??= fetch(new URL('./assets/elm-modules-index.json', import.meta.url).href)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => json?.modules ?? null)
+    .catch(() => null);
+  return moduleIndexPromise;
+}
+
+/** Install any packages the source imports but that aren't available yet. */
+async function autoInstallFromSource(compiler) {
+  const index = await getModuleIndex();
+  if (!index) {
+    log('No module index found — run `npm run build:index` to auto-install imports.');
+    return;
+  }
+  setStatus('Checking imports…', 'busy');
+  const { installed, unresolved } = await autoInstallImports(compiler, els.editor.value, { index, log });
+  if (installed.length) log(`Auto-installed: ${installed.join(', ')}`);
+  if (unresolved.length) log(`Could not resolve imports: ${unresolved.join(', ')}`);
+}
+
 async function run() {
   els.run.disabled = true;
   try {
     const compiler = await getCompiler();
     await ensurePackages(compiler);
+    await autoInstallFromSource(compiler);
     setStatus('Compiling…', 'busy');
     const started = performance.now();
     const result = await compiler.compile(els.editor.value);
