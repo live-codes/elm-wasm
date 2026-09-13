@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>@live-codes/elm-wasm — worker test</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
+      .ok { color: #1a7f37; }
+      .err { color: #cf222e; }
+    </style>
+  </head>
+  <body>
+    <h1>@live-codes/elm-wasm</h1>
+    <p>Compiling Elm inside a module web worker.</p>
+    <pre id="out">starting…</pre>
+
+    <script type="module">
+      const out = document.getElementById('out');
+      const log = (message) => {
+        out.textContent += '\n' + message;
+      };
+
+      const source = `module Main exposing (main)
+
+import Html exposing (text)
+
+main =
+    text "hello from a worker"
+`;
+
+      const worker = new Worker('./worker.js', { type: 'module' });
+
+      worker.onmessage = (event) => {
+        const data = event.data;
+        if (data.ready) {
+          log('worker ready');
+          worker.postMessage(source);
+          return;
+        }
+        window.__workerResult = data;
+        if (data.ok) {
+          log(`OK: ${data.name}, ${data.bytes} bytes of JS, map=${data.hasMap}`);
+        } else {
+          log(`ERROR: ${data.name}: ${data.message}`);
+        }
+      };
+
+      worker.onerror = (event) => {
+        const data = { ok: false, name: 'WorkerError', message: event.message };
+        window.__workerResult = data;
+        log(`ERROR: ${event.message}`);
+      };
+
+      log('spawning module worker…');
+    </script>
+  </body>
+</html>

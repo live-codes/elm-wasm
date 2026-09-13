@@ -1,8 +1,2 @@
 node_modules/
-public/assets/ulm.wasm
-public/assets/*.tar.gz
-public/assets/elm-modules-index.json
-public/bundle.js
-public/bundle.js.map
-compiler/out/
 compiler/.work/

@@ -1,5 +1,5 @@
 /**
- * Import maps: point a module at a specific URL.
+ * Import maps through the package API: point a module at a specific URL.
  *
  * The strongest proof that the override is actually used: we replace
  * `Maybe.Extra` with a copy that exposes an extra `sentinel` value, then
@@ -8,18 +8,12 @@
  *
  *   node scripts/test-importmap.mjs
  */
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createElmCompiler } from '../src/compiler.js';
-import { installFromImportMap, parseImportMap } from '../src/importmap.js';
-
-const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-const assetsDir = path.join(root, 'public', 'assets');
-const load = (name) => readFile(path.join(assetsDir, name));
+import { createCompiler, parseImportMap } from '../packages/elm-wasm/src/index.js';
+import { localCompilerOptions } from './_assets.mjs';
 
 const SENTINEL = 'OVERRIDE_SENTINEL_12345';
-const ORIGINAL_URL = 'https://cdn.jsdelivr.net/gh/elm-community/maybe-extra@5.3.0/src/Maybe/Extra.elm';
+const ORIGINAL_URL =
+  'https://cdn.jsdelivr.net/gh/elm-community/maybe-extra@5.3.0/src/Maybe/Extra.elm';
 
 const original = await (await fetch(ORIGINAL_URL)).text();
 
@@ -39,27 +33,9 @@ const importMap = {
 };
 console.log('parsed import map:', parseImportMap(importMap).map((e) => e.module).join(', '));
 
-const [wasmBytes, artifactsTarGz, elmInitTarGz] = await Promise.all([
-  load('ulm.wasm'),
-  load('elm-all-examples-package-artifacts.tar.gz'),
-  load('elm-init.tar.gz'),
-]);
-const index = JSON.parse(await readFile(path.join(assetsDir, 'elm-modules-index.json'), 'utf8')).modules;
-const jsffi = (await import(pathToFileURL(path.join(assetsDir, 'ulm.js')).href)).default;
-
-const compiler = await createElmCompiler({
-  wasmBytes,
-  jsffi,
-  artifactsTarGz,
-  elmInitTarGz,
-  log: process.env.VERBOSE ? console.log : () => {},
-});
-
-const applied = await installFromImportMap(compiler, importMap, {
-  index,
-  log: (msg) => console.log('  ' + msg.replace(/data:[^ ]+/g, '<data-url>')),
-});
-console.log('installed:', applied.installed, '| overridden:', applied.overridden, '| unresolved:', applied.unresolved);
+const compiler = await createCompiler(
+  await localCompilerOptions({ onLog: (m) => console.log('  ' + m.replace(/data:[^ ]+/g, '<data-url>')) }),
+);
 
 const app = `module Main exposing (main)
 
@@ -69,14 +45,9 @@ import Maybe.Extra
 main =
     text Maybe.Extra.sentinel
 `;
-const result = await compiler.compile(app);
-console.log('result.type =', result.type);
-if (result.type !== 'success') {
-  console.log(JSON.stringify(result).slice(0, 800));
-  process.exitCode = 1;
-} else {
-  const used = result.js.includes(SENTINEL);
-  console.log(`override used in output: ${used}`);
-  console.log(used ? 'SUCCESS: import map overrode the module' : 'FAILURE: original module was used');
-  if (!used) process.exitCode = 1;
-}
+
+const { js } = await compiler.compile(app, { importMap });
+const used = js.includes(SENTINEL);
+console.log(`override used in output: ${used}`);
+console.log(used ? 'SUCCESS: import map overrode the module' : 'FAILURE: original module was used');
+if (!used) process.exitCode = 1;

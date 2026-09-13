@@ -3,7 +3,7 @@
  *
  *   node scripts/test-sources.mjs
  */
-import { fetchPackage, getSources, packageFromUrl, sourceNames } from '../src/sources.js';
+import { fetchPackage, getSources, packageFromUrl, sourceNames } from '../packages/elm-wasm/src/index.js';
 
 console.log('named sources:', sourceNames.join(', '));
 console.log('default chain:', getSources().map((s) => s.id).join(' -> '));

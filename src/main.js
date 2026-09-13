@@ -1,12 +1,11 @@
-import { createElmCompiler, wrapJsInHtml } from './compiler.js';
-import { installPackages } from './packages.js';
-import { autoInstallImports } from './imports.js';
-import { installFromImportMap, parseImportMap } from './importmap.js';
-import { getSources } from './sources.js';
+import { createCompiler, wrapJsInHtml, ElmCompileError } from '../packages/elm-wasm/src/index.js';
 
 // Package source chain: `?cdn=github` (or a URL template) overrides the default
-// jsDelivr -> GitHub fallback. See sources.js.
-const sources = getSources(new URLSearchParams(location.search).get('cdn'));
+// jsDelivr -> GitHub fallback. See the package's sources.js.
+const cdn = new URLSearchParams(location.search).get('cdn') ?? undefined;
+
+// Where the compiler assets are served from, for the package's `baseUrl` option.
+const ASSETS_BASE_URL = './assets/';
 
 const DEFAULT_SOURCE = `module Main exposing (main)
 
@@ -58,10 +57,7 @@ const els = {
 };
 
 let compilerPromise = null;
-let moduleIndexPromise = null;
 let outputUrl = null;
-let installedPackagesKey = null;
-let installedImportMapKey = null;
 
 function log(message) {
   const line = document.createElement('div');
@@ -75,36 +71,15 @@ function setStatus(text, kind = '') {
   els.status.dataset.kind = kind;
 }
 
-const fetchBytes = async (relative) => {
-  const url = new URL(relative, import.meta.url).href;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch ${relative}: HTTP ${res.status}`);
-  return res.arrayBuffer();
-};
-
 function getCompiler() {
-  compilerPromise ??= initCompiler();
+  compilerPromise ??= (async () => {
+    setStatus('Loading compiler…', 'busy');
+    const started = performance.now();
+    const compiler = await createCompiler({ baseUrl: ASSETS_BASE_URL, cdn, onLog: log });
+    log(`Compiler ready in ${(performance.now() - started).toFixed(0)} ms`);
+    return compiler;
+  })();
   return compilerPromise;
-}
-
-async function initCompiler() {
-  setStatus('Loading compiler…', 'busy');
-  const started = performance.now();
-  const [wasmBytes, jsffiModule, artifactsTarGz, elmInitTarGz] = await Promise.all([
-    fetchBytes('./assets/ulm.wasm'),
-    import(new URL('./assets/ulm.js', import.meta.url).href),
-    fetchBytes('./assets/elm-all-examples-package-artifacts.tar.gz'),
-    fetchBytes('./assets/elm-init.tar.gz'),
-  ]);
-  const compiler = await createElmCompiler({
-    wasmBytes,
-    jsffi: jsffiModule.default,
-    artifactsTarGz,
-    elmInitTarGz,
-    log,
-  });
-  log(`Compiler ready in ${(performance.now() - started).toFixed(0)} ms`);
-  return compiler;
 }
 
 function showHtml(html) {
@@ -119,18 +94,20 @@ const escapeHtml = (str) =>
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
 
-/** Turn the compiler's structured errors into readable text. */
-function formatElmErrors(result) {
-  if (Array.isArray(result.errors)) {
-    return result.errors
-      .map((err) => {
-        const header = `${err.name ?? 'Elm'}${err.path ? ` (${err.path})` : ''}`;
-        const problems = (err.problems ?? []).map((problem) => {
+/** Turn the structured Elm problems on an `ElmCompileError` into readable text. */
+function formatElmErrors(error) {
+  if (Array.isArray(error.errors)) {
+    return error.errors
+      .map((report) => {
+        const header = `${report.name ?? 'Elm'}${report.path ? ` (${report.path})` : ''}`;
+        const problems = (report.problems ?? []).map((problem) => {
           const at = problem.region?.start
             ? ` at line ${problem.region.start.line}, column ${problem.region.start.column}`
             : '';
           const message = Array.isArray(problem.message)
-            ? problem.message.map((part) => (typeof part === 'string' ? part : (part.string ?? ''))).join('')
+            ? problem.message
+                .map((part) => (typeof part === 'string' ? part : (part.string ?? '')))
+                .join('')
             : String(problem.message ?? '');
           return `${problem.title ?? 'ERROR'}${at}\n${message}`;
         });
@@ -138,97 +115,52 @@ function formatElmErrors(result) {
       })
       .join('\n\n────────────\n\n');
   }
-  if (result.message) return `${result.title ?? 'Error'}\n\n${result.message}`;
-  return JSON.stringify(result, null, 2);
+  return error.message ?? String(error);
 }
 
-const errorHtml = (result) => `<!DOCTYPE html>
+const errorHtml = (error) => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
 body { font-family: ui-monospace, monospace; padding: 12px; color: #b00020; font-size: 13px; }
 pre { white-space: pre-wrap; line-height: 1.45; }
 </style></head>
-<body><h2>Compilation failed</h2><pre>${escapeHtml(formatElmErrors(result))}</pre></body></html>`;
+<body><h2>Compilation failed</h2><pre>${escapeHtml(formatElmErrors(error))}</pre></body></html>`;
 
-/** Install any packages named in the Packages field (once per change). */
-async function ensurePackages(compiler) {
-  const raw = els.packages?.value.trim() ?? '';
-  if (!raw || raw === installedPackagesKey) return;
-  const specs = raw.split(/[\s,]+/).filter(Boolean);
-  setStatus('Installing packages…', 'busy');
-  await installPackages(compiler, specs, { sources, log });
-  installedPackagesKey = raw;
-  log(`Installed: ${specs.join(', ')}`);
-}
-
-/** Apply the import map, if one was provided (once per change). */
-async function applyImportMap(compiler, index) {
-  const raw = els.importMap?.value.trim() ?? '';
-  if (!raw || raw === installedImportMapKey) return;
-  const entries = parseImportMap(raw); // validate early so bad JSON is reported clearly
-  setStatus('Applying import map…', 'busy');
-  const { installed, overridden, unresolved } = await installFromImportMap(compiler, entries, {
-    index,
-    sources,
-    log,
-  });
-  installedImportMapKey = raw;
-  if (installed.length) log(`Import map installed: ${installed.join(', ')}`);
-  if (overridden.length) log(`Import map overrides: ${overridden.join(', ')}`);
-  if (unresolved.length) log(`Import map unresolved: ${unresolved.join(', ')}`);
-}
-
-/** Lazily load the module -> package index (optional; `npm run build:index`). */
-function getModuleIndex() {
-  moduleIndexPromise ??= fetch(new URL('./assets/elm-modules-index.json', import.meta.url).href)
-    .then((res) => (res.ok ? res.json() : null))
-    .then((json) => json?.modules ?? null)
-    .catch(() => null);
-  return moduleIndexPromise;
-}
-
-/** Apply the import map, then install any packages the source imports. */
-async function resolveModules(compiler) {
-  const index = await getModuleIndex();
-  await applyImportMap(compiler, index);
-
-  if (!index) {
-    log('No module index found — run `npm run build:index` to auto-install imports.');
-    return;
+/** Collect the options from the UI controls. */
+function compilerOptions() {
+  const packages = (els.packages?.value.trim() ?? '').split(/[\s,]+/).filter(Boolean);
+  let importMap;
+  const rawImportMap = els.importMap?.value.trim();
+  if (rawImportMap) {
+    try {
+      importMap = JSON.parse(rawImportMap);
+    } catch (err) {
+      throw new Error(`Import map is not valid JSON: ${err.message}`);
+    }
   }
-  setStatus('Checking imports…', 'busy');
-  const { installed, unresolved } = await autoInstallImports(compiler, els.editor.value, { index, sources, log });
-  if (installed.length) log(`Auto-installed: ${installed.join(', ')}`);
-  if (unresolved.length) log(`Could not resolve imports: ${unresolved.join(', ')}`);
+  return { packages, importMap, onLog: log };
 }
 
 async function run() {
   els.run.disabled = true;
   try {
     const compiler = await getCompiler();
-    await ensurePackages(compiler);
-    await resolveModules(compiler);
     setStatus('Compiling…', 'busy');
     const started = performance.now();
-    const result = await compiler.compile(els.editor.value);
+    const { js, name } = await compiler.compile(els.editor.value, compilerOptions());
     const ms = (performance.now() - started).toFixed(0);
-
-    if (result.type === 'success') {
-      log(`Compiled ${result.name} (${result.js.length} bytes of JS) in ${ms} ms`);
-      setStatus(`Compiled in ${ms} ms`, 'ok');
-      showHtml(wrapJsInHtml(result.js, result.name));
-    } else if (result.type === 'compile-errors') {
-      setStatus('Compile errors', 'error');
-      log(`Compile errors: ${formatElmErrors(result)}`);
-      showHtml(errorHtml(result));
-    } else {
-      setStatus('Compiler error', 'error');
-      log(`Compiler error: ${formatElmErrors(result)}`);
-      showHtml(errorHtml(result));
-    }
+    log(`Compiled ${name} (${js.length} bytes of JS) in ${ms} ms`);
+    setStatus(`Compiled in ${ms} ms`, 'ok');
+    showHtml(wrapJsInHtml(js, name));
   } catch (err) {
-    console.error(err);
-    setStatus(`Failed: ${err.message}`, 'error');
-    log(`Failed: ${err.stack || err.message}`);
+    if (err instanceof ElmCompileError) {
+      setStatus(err.type === 'compile-errors' ? 'Compile errors' : 'Compiler error', 'error');
+      log(formatElmErrors(err));
+      showHtml(errorHtml(err));
+    } else {
+      console.error(err);
+      setStatus(`Failed: ${err.message}`, 'error');
+      log(`Failed: ${err.stack || err.message}`);
+    }
   } finally {
     els.run.disabled = false;
   }

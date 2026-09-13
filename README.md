@@ -22,7 +22,33 @@ Open the page, edit `Main.elm`, press **Run** (or Ctrl/⌘+Enter), and the compi
 - **Configurable CDN sources**: packages come from jsDelivr by default (no GitHub API rate limits) with GitHub as a fallback; switch with `?cdn=github`, or point at any mirror via a URL template. See [Package sources](#package-sources-cdns).
 - **Import maps**: point individual modules at specific URLs with a small JSON map. See [Import maps](#import-maps).
 - Elm's rich, structured **compile errors** (rendered as readable text).
-- Everything is **isomorphic**: the same `src/compiler.js`, `src/sources.js`, `src/packages.js`, `src/imports.js` and `src/importmap.js` run in Node (`npm test`, `npm run test:imports`, `npm run test:packages`, `npm run test:sources`, `npm run test:importmap`) and in the browser.
+- Everything is **isomorphic**: the same code runs in Node and in the browser (and in a web worker) — see [the package](#the-npm-package-live-codeselm-wasm).
+
+## The npm package: `@live-codes/elm-wasm`
+
+The compiler plumbing is published as **`@live-codes/elm-wasm`** ([`packages/elm-wasm`](./packages/elm-wasm)): the WASM compiler, the WASI shim, the package installer and import resolution, bundled and minified into a single ESM file with the compiler assets shipped alongside it. It is DOM-free, so it runs in the browser, a **web worker**, or Node.
+
+```js
+import { compile } from '@live-codes/elm-wasm';
+
+const { js, name } = await compile(source, {
+  baseUrl: 'https://cdn.example.com/elm-wasm/',      // where the assets are
+  packages: ['mdgriffith/elm-ui@1.1.8'],             // optional, explicit
+  importMap: { 'Maybe.Extra': 'https://…/Extra.elm' }, // optional
+});
+```
+
+- Compile errors **throw** an `ElmCompileError` carrying the structured Elm problems.
+- `createCompiler(options)` returns a reusable, warm instance for repeated compiles.
+- Assets load from `baseUrl` (default: next to the bundle), or can be passed in as bytes.
+
+See [packages/elm-wasm/README.md](./packages/elm-wasm/README.md) for the full API, the worker recipe, and the options table. It ships both an ESM build (`dist/index.js`) and an IIFE build (`dist/index.umd.js`, global `ElmWasm`) for plain `<script>` tags and classic workers. The playground in this repo is built on it.
+
+```bash
+npm run fetch-assets:pkg   # collect the compiler + data files
+npm run build:pkg          # bundle + minify into packages/elm-wasm/dist
+npm run test:pkg           # smoke-test the built package
+```
 
 ## Quick start
 
@@ -237,7 +263,7 @@ I evaluated the other ways to compile Elm in a browser before settling on this o
 LiveCodes already has the right seam for this: [`@live-codes/browser-compilers`](../../live-codes/browser-compilers) hosts in-browser compilers on a CDN, and language definitions declare which scripts to load. A concrete plan:
 
 1. **Build & host the compiler.** Use the `compiler/` pipeline to build `ulm.wasm` + `ulm.js` from a pinned commit and publish them as a release, then host them on the CDN like the other compilers. This removes the elm.run fallback and pins a specific Elm version.
-2. **Thin loader.** Port `src/compiler.js` into a `browser-compilers` entry (e.g. `elm.ts`) exposing `loadElm()` / `elm.compile(code)`. Keep the WASI shim and tarball unpacking there; they are the only Elm-specific machinery.
+2. **Thin loader.** Use `@live-codes/elm-wasm` directly — `createCompiler({ baseUrl })` is already a worker-safe, DOM-free loader with `compile(source, options)`.
 3. **Worker.** Run the compiler in a Web Worker (as LiveCodes does for other heavy compilers) so the 12 MB module and compilation never block the UI. Load lazily on first Elm compile.
 4. **Packages.** Runtime CDN fetches are fine for a PoC but not for production. Pre-resolve dependencies with the official `elm` CLI at build time and ship the exact set (sources + artifacts) as a tarball on the CDN, or route through our own CORS proxy/cache — the `cdn` option already makes the source pluggable. Ship `elm-modules-index.json` alongside the compiler so imports can be auto-resolved without hitting package.elm-lang.org, and let users pin individual modules with import maps.
 5. **Language config in LiveCodes.** Register `elm` in the `Language` enum / languages map with `title`, `extensions: ['.elm']`, `editorLanguage: 'elm'` (Monaco's built-in `elm` language), and a `compile` hook that calls the worker and returns the generated JS.
@@ -249,12 +275,8 @@ The nice property of this design: LiveCodes' `compile` contract is just *source 
 ## Project layout
 
 ```
-src/compiler.js        environment-agnostic compiler core (WASI FS + compile)
-src/sources.js         package sources (jsDelivr / GitHub / statically / templates)
-src/packages.js        package installer + transitive dependencies
-src/imports.js         import detection + module -> package resolution
-src/importmap.js       import maps (module -> URL)
-src/main.js            browser playground UI
+packages/elm-wasm/     the published package (see packages/elm-wasm/README.md)
+src/main.js            browser playground UI (built on the package)
 public/index.html      the page
 public/styles.css
 public/assets/         downloaded/generated assets (git-ignored)
@@ -263,6 +285,7 @@ compiler/              builds ulm.wasm + ulm.js (see compiler/README.md)
 scripts/fetch-assets.mjs
 scripts/build-module-index.mjs     builds the module -> package index
 scripts/update-compiler-pins.mjs   checks/bumps the pinned upstream commits
+scripts/_assets.mjs                shared test helper
 scripts/test-compile.mjs   Node smoke test (single module)
 scripts/test-imports.mjs   Node smoke test (automatic imports)
 scripts/test-packages.mjs  Node smoke test (explicit package install)

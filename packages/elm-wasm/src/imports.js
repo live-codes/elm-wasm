@@ -57,6 +57,7 @@ export async function autoInstallImports(compiler, source, { index, cdn, sources
 
   const specs = [...new Set(needed.map(({ package: pkg, version }) => `${pkg}@${version}`))];
   if (specs.length) await installPackages(compiler, specs, { sources, log });
+  if (unresolved.length) log(`Could not resolve imports: ${unresolved.join(', ')}`);
 
   return { imports, installed: specs, unresolved };
 }

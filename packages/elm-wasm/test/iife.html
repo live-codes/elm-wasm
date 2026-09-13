@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>@live-codes/elm-wasm — IIFE build</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>@live-codes/elm-wasm — IIFE build</h1>
+    <p>Loaded with a plain <code>&lt;script src&gt;</code>; also used from a classic worker.</p>
+    <pre id="out">starting…</pre>
+
+    <!-- The UMD/IIFE bundle: defines the global `ElmWasm`. -->
+    <script src="/elm-wasm/index.umd.js"></script>
+    <script>
+      const out = document.getElementById("out");
+      const log = (message) => {
+        out.textContent += "\n" + message;
+      };
+
+      const source = `module Main exposing (main)
+
+import Html exposing (text)
+
+main =
+    text "hello from the iife build"
+`;
+
+      window.__iife = {};
+
+      log("typeof ElmWasm = " + typeof ElmWasm);
+      log("exports: " + Object.keys(ElmWasm).slice(0, 6).join(", ") + " …");
+
+      // 1. Main thread.
+      ElmWasm.compile(source, { baseUrl: "/elm-wasm/" })
+        .then(({ name, js }) => {
+          window.__iife.main = { ok: true, name, bytes: js.length };
+          log(`main thread OK: ${name}, ${js.length} bytes`);
+        })
+        .catch((err) => {
+          window.__iife.main = { ok: false, message: err.message };
+          log(`main thread ERROR: ${err.name}: ${err.message}`);
+        });
+
+      // 2. Classic worker, via importScripts.
+      const worker = new Worker("./iife-worker.js");
+      worker.onmessage = (event) => {
+        if (event.data.ready) {
+          log("classic worker ready");
+          worker.postMessage(source);
+          return;
+        }
+        window.__iife.worker = event.data;
+        log(
+          event.data.ok
+            ? `classic worker OK: ${event.data.name}, ${event.data.bytes} bytes`
+            : `classic worker ERROR: ${event.data.name}: ${event.data.message}`,
+        );
+      };
+      worker.onerror = (event) => {
+        window.__iife.worker = { ok: false, message: event.message };
+        log(`classic worker ERROR: ${event.message}`);
+      };
+
+      log("spawning classic worker…");
+    </script>
+  </body>
+</html>

@@ -3,6 +3,12 @@
  * Serves correct MIME types (notably application/wasm).
  *
  *   node scripts/serve.mjs [port]
+ *
+ * Besides `public/`, two extra roots are mounted so the package's built output
+ * and its worker test can be served from the same origin:
+ *
+ *   /elm-wasm/       packages/elm-wasm/dist
+ *   /elm-wasm-test/  packages/elm-wasm/test
  */
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
@@ -11,7 +17,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(fileURLToPath(new URL('../public', import.meta.url)));
+const repoRoot = path.resolve(root, '..');
 const port = Number(process.argv[2] || process.env.PORT || 8080);
+
+const MOUNTS = [
+  ['/elm-wasm/', path.join(repoRoot, 'packages', 'elm-wasm', 'dist')],
+  ['/elm-wasm-test/', path.join(repoRoot, 'packages', 'elm-wasm', 'test')],
+];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -26,11 +38,22 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+/** Map a URL path to `{ base, file }`, applying the mounts above. */
+function resolvePath(urlPath) {
+  for (const [prefix, dir] of MOUNTS) {
+    if (urlPath === prefix.slice(0, -1) || urlPath.startsWith(prefix)) {
+      return { base: dir, file: path.join(dir, urlPath.slice(prefix.length)) };
+    }
+  }
+  return { base: root, file: path.join(root, urlPath) };
+}
+
 const server = createServer(async (req, res) => {
   try {
     const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-    let filePath = path.join(root, urlPath);
-    if (!filePath.startsWith(root)) {
+    const { base, file } = resolvePath(urlPath);
+    let filePath = file;
+    if (!filePath.startsWith(base)) {
       res.writeHead(403).end('Forbidden');
       return;
     }
@@ -56,4 +79,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`Elm-in-browser PoC running at http://localhost:${port}/`);
+  console.log(`  package dist:  http://localhost:${port}/elm-wasm/`);
+  console.log(`  worker test:   http://localhost:${port}/elm-wasm-test/`);
 });
