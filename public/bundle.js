@@ -2108,22 +2108,8 @@ async function installFromImportMap(compiler, input, { index, cdn: cdn2, sources
 var JSValManager = class {
   #lastk = 0;
   #kv = /* @__PURE__ */ new Map();
-  constructor() {
-  }
-  // Maybe just bump this.#lastk? For 64-bit ids that's sufficient,
-  // but better safe than sorry in the 32-bit case.
-  #allocKey() {
-    let k = this.#lastk;
-    while (true) {
-      if (!this.#kv.has(k)) {
-        this.#lastk = k;
-        return k;
-      }
-      k = k + 1 | 0;
-    }
-  }
   newJSVal(v) {
-    const k = this.#allocKey();
+    const k = ++this.#lastk;
     this.#kv.set(k, v);
     return k;
   }
@@ -2144,20 +2130,6 @@ var JSValManager = class {
     }
   }
 };
-var SetImmediate = class {
-  #fs = [];
-  #mc = new MessageChannel();
-  constructor() {
-    this.#mc.port1.addEventListener("message", () => {
-      this.#fs.pop()();
-    });
-    this.#mc.port1.start();
-  }
-  setImmediate(cb, ...args) {
-    this.#fs.push(() => cb(...args));
-    this.#mc.port2.postMessage(void 0);
-  }
-};
 var __elmWasmSetImmediate = null;
 var resolveSetImmediate = () => {
   if (globalThis.scheduler) {
@@ -2175,7 +2147,8 @@ var setImmediate = (cb, ...args) => {
 };
 var ulm_default = (__exports) => {
   const __ghc_wasm_jsffi_jsval_manager = new JSValManager();
-  const __ghc_wasm_jsffi_finalization_registry = new FinalizationRegistry((sp) => __exports.rts_freeStablePtr(sp));
+  const __ghc_wasm_jsffi_finalization_registry = globalThis.FinalizationRegistry ? new FinalizationRegistry((sp) => __exports.rts_freeStablePtr(sp)) : { register: () => {
+  }, unregister: () => true };
   return {
     newJSVal: (v) => __ghc_wasm_jsffi_jsval_manager.newJSVal(v),
     getJSVal: (k) => __ghc_wasm_jsffi_jsval_manager.getJSVal(k),
@@ -2184,7 +2157,14 @@ var ulm_default = (__exports) => {
     ZC0ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: ($1, $2) => $1.reject(new WebAssembly.RuntimeError($2)),
     ZC18ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: ($1, $2) => $1.resolve($2),
     ZC19ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: ($1) => $1.resolve(),
-    ZC20ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: () => {
+    ZC20ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: ($1) => {
+      $1.throwTo = () => {
+      };
+    },
+    ZC21ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: ($1, $2) => {
+      $1.throwTo = (err) => __exports.rts_promiseThrowTo($2, err);
+    },
+    ZC22ZCghczminternalZCGHCziInternalziWasmziPrimziExportsZC: () => {
       let res, rej;
       const p = new Promise((resolve, reject) => {
         res = resolve;
@@ -2199,8 +2179,9 @@ var ulm_default = (__exports) => {
     ZC2ZCghczminternalZCGHCziInternalziWasmziPrimziTypesZC: ($1, $2, $3) => new TextEncoder().encodeInto($1, new Uint8Array(__exports.memory.buffer, $2, $3)).written,
     ZC3ZCghczminternalZCGHCziInternalziWasmziPrimziTypesZC: ($1) => $1.length,
     ZC4ZCghczminternalZCGHCziInternalziWasmziPrimziTypesZC: ($1) => {
-      if (!__ghc_wasm_jsffi_finalization_registry.unregister($1)) {
-        throw new WebAssembly.RuntimeError("js_callback_unregister");
+      try {
+        __ghc_wasm_jsffi_finalization_registry.unregister($1);
+      } catch {
       }
     },
     ZC18ZCghczminternalZCGHCziInternalziWasmziPrimziImportsZC: ($1, $2) => $1.then(() => __exports.rts_promiseResolveUnit($2), (err) => __exports.rts_promiseReject($2, err)),

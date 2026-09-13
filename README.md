@@ -237,7 +237,7 @@ npm run update:pins     # bump compiler/versions.env
 npm run build:compiler  # rebuild ulm.wasm + ulm.js (needs the GHC wasm toolchain)
 ```
 
-CI does both halves: `.github/workflows/build-compiler.yml` builds and publishes a release, and `update-compiler-pins.yml` opens a weekly PR when the upstream commits move. See [compiler/README.md](./compiler/README.md) for the build details, the update flow, and the GHC-flavour caveat. The Elm compiler's BSD-3 licence and attribution must be preserved in any distribution.
+CI does both halves: `.github/workflows/build-compiler.yml` builds and publishes a release, and `update-compiler-pins.yml` opens a weekly PR when the upstream commits move. See [compiler/README.md](./compiler/README.md) for the build details, the update flow, and the GHC-flavour caveat. Note that **the fork's published tree does not compile as-is** — `build.sh` applies two minimal patches, documented under [Patches](./compiler/README.md#patches). The Elm compiler's BSD-3 licence and attribution must be preserved in any distribution.
 
 ## Why not the other options
 

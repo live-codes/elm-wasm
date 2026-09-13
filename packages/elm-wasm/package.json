@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/elm-wasm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The Elm compiler compiled to WebAssembly — compile Elm to JavaScript in the browser, a web worker, or Node.",
   "keywords": [
     "elm",

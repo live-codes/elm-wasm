@@ -44,10 +44,11 @@ const setImmediate = (cb, ...args) => {
 export function patchGlue(source) {
   if (source.includes(PATCH_MARKER)) return source;
   if (!PATTERN.test(source)) {
-    throw new Error(
-      'Could not patch assets/ulm.js: the setImmediate top-level await was not found. ' +
-        'The upstream glue format probably changed — update scripts/patch-glue.mjs.',
-    );
+    // Newer post-linker output already resolves setImmediate without a
+    // top-level await, so there is nothing to do. (If a future format brings
+    // top-level await back in a different shape, the IIFE build will fail
+    // loudly in esbuild — update the pattern here then.)
+    return source;
   }
   return source.replace(PATTERN, REPLACEMENT);
 }
