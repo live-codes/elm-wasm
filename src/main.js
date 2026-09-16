@@ -1,4 +1,4 @@
-import { createCompiler, wrapJsInHtml, ElmCompileError } from '../packages/elm-wasm/src/index.js';
+import { createCompiler, wrapJsInHtml, ElmCompileError, formatError } from '../packages/elm-wasm/src/index.js';
 
 // Package source chain: `?cdn=github` (or a URL template) overrides the default
 // jsDelivr -> GitHub fallback. See the package's sources.js.
@@ -94,36 +94,13 @@ const escapeHtml = (str) =>
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
 
-/** Turn the structured Elm problems on an `ElmCompileError` into readable text. */
-function formatElmErrors(error) {
-  if (Array.isArray(error.errors)) {
-    return error.errors
-      .map((report) => {
-        const header = `${report.name ?? 'Elm'}${report.path ? ` (${report.path})` : ''}`;
-        const problems = (report.problems ?? []).map((problem) => {
-          const at = problem.region?.start
-            ? ` at line ${problem.region.start.line}, column ${problem.region.start.column}`
-            : '';
-          const message = Array.isArray(problem.message)
-            ? problem.message
-                .map((part) => (typeof part === 'string' ? part : (part.string ?? '')))
-                .join('')
-            : String(problem.message ?? '');
-          return `${problem.title ?? 'ERROR'}${at}\n${message}`;
-        });
-        return [header, ...problems].join('\n\n');
-      })
-      .join('\n\n────────────\n\n');
-  }
-  return error.message ?? String(error);
-}
-
+/** Render a compile failure (the package's `formatError` handles the Elm problems). */
 const errorHtml = (error) => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
 body { font-family: ui-monospace, monospace; padding: 12px; color: #b00020; font-size: 13px; }
 pre { white-space: pre-wrap; line-height: 1.45; }
 </style></head>
-<body><h2>Compilation failed</h2><pre>${escapeHtml(formatElmErrors(error))}</pre></body></html>`;
+<body><h2>Compilation failed</h2><pre>${escapeHtml(formatError(error))}</pre></body></html>`;
 
 /** Collect the options from the UI controls. */
 function compilerOptions() {
@@ -154,7 +131,7 @@ async function run() {
   } catch (err) {
     if (err instanceof ElmCompileError) {
       setStatus(err.type === 'compile-errors' ? 'Compile errors' : 'Compiler error', 'error');
-      log(formatElmErrors(err));
+      log(formatError(err));
       showHtml(errorHtml(err));
     } else {
       console.error(err);

@@ -30,7 +30,8 @@ export function detectImports(source) {
  *
  * @param {object} options
  * @param {string[]} options.imports        module names
- * @param {Set<string>} options.available   modules already provided by installed packages
+ * @param {Set<string>} options.available   modules the application can already import
+ *                                          (i.e. those exposed by its `elm.json` dependencies)
  * @param {Record<string, [string, string]>} [options.index]  module -> [package, version]
  */
 export function resolveImports({ imports, available, index }) {
@@ -52,7 +53,11 @@ export function resolveImports({ imports, available, index }) {
  */
 export async function autoInstallImports(compiler, source, { index, cdn, sources = getSources(cdn), log = () => {} } = {}) {
   const imports = detectImports(source);
-  const available = compiler.listModules();
+  // Only the application's own dependencies make a module importable. Asking the
+  // file system instead (`listModules()`) also reports the packages the compiler
+  // ships artifacts for, which Elm does not resolve imports against — so they
+  // would never be added to `elm.json` and the import would fail to compile.
+  const available = compiler.listImportableModules();
   const { needed, unresolved } = resolveImports({ imports, available, index });
 
   const specs = [...new Set(needed.map(({ package: pkg, version }) => `${pkg}@${version}`))];

@@ -73,8 +73,12 @@ export async function installPackages(compiler, specs, { log = () => {}, cdn, so
   const base = JSON.parse(compiler.readText('/elm.json'));
   const direct = { ...base.dependencies.direct };
   const indirect = { ...base.dependencies.indirect };
-  // Packages already shipped with the compiler's artifacts — no need to fetch.
-  const preinstalled = new Set([...Object.keys(direct), ...Object.keys(indirect)]);
+  // Packages the application already depends on — nothing to do.
+  const required = new Set([...Object.keys(direct), ...Object.keys(indirect)]);
+  // Versions already in the file system (bundled with the compiler, or installed
+  // by an earlier compile). Reused for transitive dependencies when they satisfy
+  // the constraint, so nothing is downloaded.
+  const onDisk = new Map(compiler.listPackages().map((pkg) => [pkg.name, pkg.version]));
   const installed = new Set();
 
   const queue = [];
@@ -84,23 +88,36 @@ export async function installPackages(compiler, specs, { log = () => {}, cdn, so
 
   while (queue.length) {
     const { name, version, direct: isDirect } = queue.shift();
-    if (installed.has(name) || preinstalled.has(name)) {
+    if (installed.has(name) || required.has(name)) {
       installed.add(name);
       continue;
     }
 
-    log(`Installing ${name}@${version}…`);
-    const { elmJson, files, source } = await fetchPackage(name, version, { sources, log });
-    log(`  via ${source}`);
-    compiler.installPackage({ name, version, elmJson, files });
+    // A package that is already in the file system — bundled with the compiler's
+    // precompiled artifacts, or installed by an earlier compile — is usable as
+    // it is: making it importable only means declaring the dependency, so
+    // nothing is downloaded.
+    let elmJson = compiler.readPackageElmJson(name, version);
+    if (elmJson) {
+      log(`Using bundled ${name}@${version}`);
+    } else {
+      log(`Installing ${name}@${version}…`);
+      const fetched = await fetchPackage(name, version, { sources, log });
+      log(`  via ${fetched.source}`);
+      elmJson = fetched.elmJson;
+      compiler.installPackage({ name, version, elmJson, files: fetched.files });
+    }
     installed.add(name);
     if (isDirect) direct[name] = version;
     else indirect[name] = version;
 
     for (const [dep, constraint] of Object.entries(elmJson.dependencies || {})) {
-      if (installed.has(dep) || preinstalled.has(dep)) continue;
+      if (installed.has(dep) || required.has(dep)) continue;
       let depVersion = direct[dep] ?? indirect[dep];
-      if (!depVersion || !satisfies(depVersion, constraint)) depVersion = lowerBound(constraint);
+      if (!depVersion || !satisfies(depVersion, constraint)) {
+        const present = onDisk.get(dep);
+        depVersion = present && satisfies(present, constraint) ? present : lowerBound(constraint);
+      }
       if (!depVersion) throw new Error(`Could not resolve a version for ${dep} (${constraint})`);
       queue.push({ name: dep, version: depVersion, direct: false });
     }

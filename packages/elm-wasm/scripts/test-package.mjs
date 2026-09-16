@@ -7,7 +7,7 @@
  *
  *   node scripts/test-package.mjs
  */
-import { createCompiler, compile } from '../dist/index.js';
+import { createCompiler, compile, formatError } from '../dist/index.js';
 
 const log = process.env.VERBOSE ? (m) => console.log('  ' + m) : () => {};
 
@@ -53,6 +53,23 @@ try {
   console.log(`skipped (offline?): ${err.name}: ${err.message}`);
 }
 
+// A package the compiler ships precompiled artifacts for: it must be enabled
+// without downloading anything (it only has to be declared in `elm.json`).
+console.log('\nCompiling with a bundled import (no download)…');
+const installLog = [];
+const bundledSource = `module Main exposing (main)
+
+import Html exposing (text)
+import Random
+
+main =
+    text (String.fromInt (Tuple.first (Random.step (Random.int 1 6) (Random.initialSeed 42))))
+`;
+const bundled = await compiler.compile(bundledSource, { onLog: (m) => installLog.push(m) });
+const downloads = installLog.filter((m) => m.startsWith('Installing'));
+if (downloads.length) throw new Error(`expected no downloads, got: ${downloads.join(', ')}`);
+console.log(`compiled with bundled import: ${bundled.js.length} bytes, no downloads ✓`);
+
 // Errors are thrown, with the structured problems attached.
 console.log('\nChecking the error path…');
 try {
@@ -62,6 +79,19 @@ try {
   if (err.name !== 'ElmCompileError') throw err;
   const title = err.errors?.[0]?.problems?.[0]?.title;
   console.log(`ElmCompileError thrown ✓  type=${err.type} first problem=${title}`);
+}
+
+// `formatError` renders Elm's styled message parts (they stringify to
+// `[object Object]` when joined directly) as readable text.
+console.log('\nChecking formatError…');
+try {
+  await compiler.compile('module Main exposing (main)\n\nimport NopeNope\n\n\nmain =\n    NopeNope.thing\n');
+  throw new Error('expected the compiler to fail');
+} catch (err) {
+  const text = formatError(err);
+  if (text.includes('[object Object]')) throw new Error('formatError left styled parts unflattened');
+  if (!text.includes('NopeNope')) throw new Error('formatError lost the message');
+  console.log(`formatError ✓  ${text.split('\n').slice(0, 2).join(' / ')}`);
 }
 
 // The one-shot API.

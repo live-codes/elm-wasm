@@ -40,6 +40,24 @@ if (await patchGlueFile(path.join(assetsDir, "ulm.js"))) {
 
 await mkdir(dist, { recursive: true });
 
+/**
+ * Replace the `'__VERSION__'` placeholder in `src/index.js` with the real
+ * version. esbuild's `define` cannot do this: it substitutes identifiers, not
+ * the contents of string literals, so the placeholder would ship as-is.
+ */
+const versionPlugin = (version) => ({
+  name: "version-placeholder",
+  setup(pluginBuild) {
+    pluginBuild.onLoad({ filter: /src[\\/]index\.js$/ }, async (args) => ({
+      contents: (await readFile(args.path, "utf8")).replace(
+        "'__VERSION__'",
+        JSON.stringify(version),
+      ),
+      loader: "js",
+    }));
+  },
+});
+
 const shared = {
   absWorkingDir: root,
   entryPoints: ["src/index.js"],
@@ -49,7 +67,7 @@ const shared = {
   minify: true,
   sourcemap: true,
   legalComments: "none",
-  define: { __VERSION__: JSON.stringify(pkg.version) },
+  plugins: [versionPlugin(pkg.version)],
   logLevel: "warning",
 };
 

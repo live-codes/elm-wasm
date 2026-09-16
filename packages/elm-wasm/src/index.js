@@ -38,6 +38,47 @@ export class ElmCompileError extends Error {
   }
 }
 
+/** Flatten an Elm message (plain strings and `{ string }` runs) into text. */
+function messageText(message) {
+  if (typeof message === 'string') return message;
+  if (Array.isArray(message)) return message.map(messageText).join('');
+  if (message && typeof message === 'object') return messageText(message.string);
+  return '';
+}
+
+/**
+ * Render the structured Elm problems as readable text.
+ *
+ * Elm reports a problem's `message` as a list of parts, mixing plain strings
+ * with styled runs (`{ string, bold, underline, color }`), so joining or logging
+ * it directly stringifies the styled parts as `[object Object]`. This flattens
+ * them, keeping the code excerpts, hints and `elm install …` suggestions.
+ *
+ * Accepts an `ElmCompileError`, anything with an `errors` array, or that array.
+ *
+ * @param {unknown} error
+ * @returns {string}
+ */
+export function formatError(error) {
+  const reports = Array.isArray(error) ? error : error?.errors;
+  if (!Array.isArray(reports)) return String(error?.message ?? error);
+
+  const text = reports
+    .map((report) => {
+      const header = `${report.name ?? 'Elm'}${report.path ? ` (${report.path})` : ''}`;
+      const problems = (report.problems ?? []).map((problem) => {
+        const at = problem.region?.start
+          ? ` at line ${problem.region.start.line}, column ${problem.region.start.column}`
+          : '';
+        return `${problem.title ?? 'ERROR'}${at}\n${messageText(problem.message)}`;
+      });
+      return [header, ...problems].join('\n\n');
+    })
+    .join('\n\n────────────\n\n');
+
+  return text || String(error?.message ?? error);
+}
+
 /**
  * Create a compiler instance. Reuse it to compile several times — the WASM
  * module, the virtual file system and any installed packages stay warm.
@@ -125,6 +166,9 @@ export async function createCompiler(options = {}) {
 
     /** The module currently installed/exposed, useful for debugging. */
     listPackages: () => compiler.listPackages(),
+
+    /** The modules the application can import (its `elm.json` dependencies). */
+    listImportableModules: () => compiler.listImportableModules(),
 
     /**
      * The low-level compiler (from `createElmCompiler`). Escape hatch for

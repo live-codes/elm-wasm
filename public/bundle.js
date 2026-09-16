@@ -1743,13 +1743,34 @@ async function createElmCompiler({
     for (const pkg of listPackages()) for (const m of pkg.modules) names.add(m);
     return names;
   }
+  function listImportableModules() {
+    const elmJson = JSON.parse(readText("/elm.json"));
+    const dependencies = /* @__PURE__ */ new Set([
+      ...Object.keys(elmJson.dependencies?.direct ?? {}),
+      ...Object.keys(elmJson.dependencies?.indirect ?? {})
+    ]);
+    const modules = /* @__PURE__ */ new Set();
+    for (const pkg of listPackages()) {
+      if (!dependencies.has(pkg.name)) continue;
+      for (const moduleName of pkg.modules) modules.add(moduleName);
+    }
+    return modules;
+  }
+  const packagePath = (name, version) => `/elm-home/0.19.1/packages/${name}/${version}`;
   function installPackage({ name, version, elmJson, files = {} }) {
-    const base = `/elm-home/0.19.1/packages/${name}/${version}`;
+    const base = packagePath(name, version);
     writeFile(`${base}/elm.json`, typeof elmJson === "string" ? elmJson : JSON.stringify(elmJson, null, 4));
     for (const [relativePath, content] of Object.entries(files)) {
       writeFile(`${base}/${relativePath}`, content);
     }
     return base;
+  }
+  function readPackageElmJson(name, version) {
+    try {
+      return JSON.parse(readText(`${packagePath(name, version)}/elm.json`));
+    } catch {
+      return null;
+    }
   }
   function setApplicationElmJson(elmJson, filepath = "/elm.json") {
     writeFile(filepath, typeof elmJson === "string" ? elmJson : JSON.stringify(elmJson, null, 4));
@@ -1762,9 +1783,11 @@ async function createElmCompiler({
     createDir,
     unpackInto,
     installPackage,
+    readPackageElmJson,
     setApplicationElmJson,
     listPackages,
     listModules,
+    listImportableModules,
     printFs,
     fs,
     pkgDir,
@@ -1964,7 +1987,8 @@ async function installPackages(compiler, specs, { log: log2 = () => {
   const base = JSON.parse(compiler.readText("/elm.json"));
   const direct = { ...base.dependencies.direct };
   const indirect = { ...base.dependencies.indirect };
-  const preinstalled = /* @__PURE__ */ new Set([...Object.keys(direct), ...Object.keys(indirect)]);
+  const required = /* @__PURE__ */ new Set([...Object.keys(direct), ...Object.keys(indirect)]);
+  const onDisk = new Map(compiler.listPackages().map((pkg) => [pkg.name, pkg.version]));
   const installed = /* @__PURE__ */ new Set();
   const queue = [];
   for (const { name, version } of specs.map(parseSpec)) {
@@ -1972,21 +1996,30 @@ async function installPackages(compiler, specs, { log: log2 = () => {
   }
   while (queue.length) {
     const { name, version, direct: isDirect } = queue.shift();
-    if (installed.has(name) || preinstalled.has(name)) {
+    if (installed.has(name) || required.has(name)) {
       installed.add(name);
       continue;
     }
-    log2(`Installing ${name}@${version}\u2026`);
-    const { elmJson, files, source } = await fetchPackage(name, version, { sources, log: log2 });
-    log2(`  via ${source}`);
-    compiler.installPackage({ name, version, elmJson, files });
+    let elmJson = compiler.readPackageElmJson(name, version);
+    if (elmJson) {
+      log2(`Using bundled ${name}@${version}`);
+    } else {
+      log2(`Installing ${name}@${version}\u2026`);
+      const fetched = await fetchPackage(name, version, { sources, log: log2 });
+      log2(`  via ${fetched.source}`);
+      elmJson = fetched.elmJson;
+      compiler.installPackage({ name, version, elmJson, files: fetched.files });
+    }
     installed.add(name);
     if (isDirect) direct[name] = version;
     else indirect[name] = version;
     for (const [dep, constraint] of Object.entries(elmJson.dependencies || {})) {
-      if (installed.has(dep) || preinstalled.has(dep)) continue;
+      if (installed.has(dep) || required.has(dep)) continue;
       let depVersion = direct[dep] ?? indirect[dep];
-      if (!depVersion || !satisfies(depVersion, constraint)) depVersion = lowerBound(constraint);
+      if (!depVersion || !satisfies(depVersion, constraint)) {
+        const present = onDisk.get(dep);
+        depVersion = present && satisfies(present, constraint) ? present : lowerBound(constraint);
+      }
       if (!depVersion) throw new Error(`Could not resolve a version for ${dep} (${constraint})`);
       queue.push({ name: dep, version: depVersion, direct: false });
     }
@@ -2019,7 +2052,7 @@ function resolveImports({ imports, available, index }) {
 async function autoInstallImports(compiler, source, { index, cdn: cdn2, sources = getSources(cdn2), log: log2 = () => {
 } } = {}) {
   const imports = detectImports(source);
-  const available = compiler.listModules();
+  const available = compiler.listImportableModules();
   const { needed, unresolved } = resolveImports({ imports, available, index });
   const specs = [...new Set(needed.map(({ package: pkg, version }) => `${pkg}@${version}`))];
   if (specs.length) await installPackages(compiler, specs, { sources, log: log2 });
@@ -2202,6 +2235,26 @@ var ElmCompileError = class extends Error {
     this.result = result;
   }
 };
+function messageText(message) {
+  if (typeof message === "string") return message;
+  if (Array.isArray(message)) return message.map(messageText).join("");
+  if (message && typeof message === "object") return messageText(message.string);
+  return "";
+}
+function formatError(error) {
+  const reports = Array.isArray(error) ? error : error?.errors;
+  if (!Array.isArray(reports)) return String(error?.message ?? error);
+  const text = reports.map((report) => {
+    const header = `${report.name ?? "Elm"}${report.path ? ` (${report.path})` : ""}`;
+    const problems = (report.problems ?? []).map((problem) => {
+      const at = problem.region?.start ? ` at line ${problem.region.start.line}, column ${problem.region.start.column}` : "";
+      return `${problem.title ?? "ERROR"}${at}
+${messageText(problem.message)}`;
+    });
+    return [header, ...problems].join("\n\n");
+  }).join("\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n");
+  return text || String(error?.message ?? error);
+}
 async function createCompiler(options = {}) {
   const log2 = options.onLog ?? (() => {
   });
@@ -2261,6 +2314,8 @@ async function createCompiler(options = {}) {
     },
     /** The module currently installed/exposed, useful for debugging. */
     listPackages: () => compiler.listPackages(),
+    /** The modules the application can import (its `elm.json` dependencies). */
+    listImportableModules: () => compiler.listImportableModules(),
     /**
      * The low-level compiler (from `createElmCompiler`). Escape hatch for
      * `installPackages` / `installFromImportMap` / `autoInstallImports`.
@@ -2354,27 +2409,12 @@ var escapeHtml = (str) => String(str).replace(
   /[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
 );
-function formatElmErrors(error) {
-  if (Array.isArray(error.errors)) {
-    return error.errors.map((report) => {
-      const header = `${report.name ?? "Elm"}${report.path ? ` (${report.path})` : ""}`;
-      const problems = (report.problems ?? []).map((problem) => {
-        const at = problem.region?.start ? ` at line ${problem.region.start.line}, column ${problem.region.start.column}` : "";
-        const message = Array.isArray(problem.message) ? problem.message.map((part) => typeof part === "string" ? part : part.string ?? "").join("") : String(problem.message ?? "");
-        return `${problem.title ?? "ERROR"}${at}
-${message}`;
-      });
-      return [header, ...problems].join("\n\n");
-    }).join("\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n");
-  }
-  return error.message ?? String(error);
-}
 var errorHtml = (error) => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
 body { font-family: ui-monospace, monospace; padding: 12px; color: #b00020; font-size: 13px; }
 pre { white-space: pre-wrap; line-height: 1.45; }
 </style></head>
-<body><h2>Compilation failed</h2><pre>${escapeHtml(formatElmErrors(error))}</pre></body></html>`;
+<body><h2>Compilation failed</h2><pre>${escapeHtml(formatError(error))}</pre></body></html>`;
 function compilerOptions() {
   const packages = (els.packages?.value.trim() ?? "").split(/[\s,]+/).filter(Boolean);
   let importMap;
@@ -2402,7 +2442,7 @@ async function run() {
   } catch (err) {
     if (err instanceof ElmCompileError) {
       setStatus(err.type === "compile-errors" ? "Compile errors" : "Compiler error", "error");
-      log(formatElmErrors(err));
+      log(formatError(err));
       showHtml(errorHtml(err));
     } else {
       console.error(err);

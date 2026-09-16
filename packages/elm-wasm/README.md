@@ -58,20 +58,23 @@ Compilation failures throw an `ElmCompileError` carrying the structured Elm
 problems:
 
 ```js
-import { compile, ElmCompileError } from '@live-codes/elm-wasm';
+import { compile, ElmCompileError, formatError } from '@live-codes/elm-wasm';
 
 try {
   await compile(source);
 } catch (err) {
   if (err instanceof ElmCompileError) {
-    for (const report of err.errors ?? []) {
-      for (const problem of report.problems) {
-        console.log(problem.title, problem.region, problem.message);
-      }
-    }
+    console.error(formatError(err)); // the whole Elm report, as readable text
+    console.log(err.errors); // …or the structured problems
   }
 }
 ```
+
+Use `formatError` rather than reading `problem.message` yourself: Elm reports it
+as a list of parts mixing plain strings with styled runs
+(`{ string, bold, underline, color }`), so joining it directly gives you
+`[object Object]` where the code excerpts and hints should be. `formatError`
+flattens them and keeps the suggestions (`elm install …`).
 
 ### Reuse an instance
 
@@ -151,6 +154,14 @@ recommended.
 **Automatic.** `import Maybe.Extra` just works: imports are detected, resolved
 to packages through the bundled module index, downloaded from a CDN and
 installed into the compiler's virtual file system.
+
+Deciding what is *missing* is about the application's `elm.json`, not the file
+system: the compiler ships precompiled artifacts for a set of `elm/*` packages,
+so those packages are present without being dependencies, and Elm only resolves
+an import against the dependencies. Such a package is therefore enabled by
+declaring it — no download — and so are its own dependencies when a version that
+satisfies them is already on disk. Only packages that are not bundled are
+fetched.
 
 **Explicit.** Pin versions, or use something the index does not know:
 

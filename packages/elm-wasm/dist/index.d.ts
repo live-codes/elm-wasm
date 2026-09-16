@@ -28,6 +28,18 @@ export declare class ElmCompileError extends Error {
   readonly result: unknown;
 }
 
+/**
+ * Render the structured Elm problems as readable text.
+ *
+ * Elm reports a problem's `message` as a list of parts mixing plain strings with
+ * styled runs (`{ string, bold, underline, color }`), so joining it directly
+ * stringifies the styled parts as `[object Object]`. This flattens them, keeping
+ * the code excerpts, hints and `elm install …` suggestions.
+ *
+ * Accepts an `ElmCompileError`, anything with an `errors` array, or that array.
+ */
+export declare function formatError(error: unknown): string;
+
 export type PackageSpec = string;
 
 export interface CompilerOptions {
@@ -68,6 +80,13 @@ export interface CompileResult {
 export interface Compiler {
   compile(source: string, options?: CompilerOptions): Promise<CompileResult>;
   listPackages(): Array<{ name: string; version: string; modules: string[] }>;
+  /**
+   * The modules the application can import, i.e. those exposed by the packages
+   * listed in its `elm.json`. Packages that are only present in the file system
+   * (shipped with the compiler's artifacts) are not importable until they are
+   * added to the dependencies.
+   */
+  listImportableModules(): Set<string>;
   dispose(): void;
 }
 

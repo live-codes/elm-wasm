@@ -268,11 +268,42 @@ export async function createElmCompiler({
     return packages;
   }
 
-  /** All module names available to the compiler right now. */
+  /**
+   * Every module name present in the file system, whether or not the
+   * application depends on it. Note that this includes packages that are only
+   * there because the compiler ships their precompiled artifacts. Use
+   * `listImportableModules()` for the modules an `import` can resolve to.
+   */
   function listModules() {
     const names = new Set();
     for (const pkg of listPackages()) for (const m of pkg.modules) names.add(m);
     return names;
+  }
+
+  /**
+   * The modules the application can actually import: those exposed by the
+   * packages listed in its `elm.json` (direct or indirect).
+   *
+   * This is deliberately narrower than `listModules()`. The compiler ships
+   * precompiled artifacts for a set of `elm/*` packages, so those packages are
+   * present in the file system — but Elm resolves an import against the
+   * application's dependencies only, so a package that is merely present is not
+   * importable until it is added to `elm.json`.
+   *
+   * @returns {Set<string>}
+   */
+  function listImportableModules() {
+    const elmJson = JSON.parse(readText('/elm.json'));
+    const dependencies = new Set([
+      ...Object.keys(elmJson.dependencies?.direct ?? {}),
+      ...Object.keys(elmJson.dependencies?.indirect ?? {}),
+    ]);
+    const modules = new Set();
+    for (const pkg of listPackages()) {
+      if (!dependencies.has(pkg.name)) continue;
+      for (const moduleName of pkg.modules) modules.add(moduleName);
+    }
+    return modules;
   }
 
   /**
@@ -283,13 +314,28 @@ export async function createElmCompiler({
    * Artifacts are optional: if a package has no precompiled `artifacts.dat`,
    * the compiler builds it from these sources on first use.
    */
+  const packagePath = (name, version) => `/elm-home/0.19.1/packages/${name}/${version}`;
+
   function installPackage({ name, version, elmJson, files = {} }) {
-    const base = `/elm-home/0.19.1/packages/${name}/${version}`;
+    const base = packagePath(name, version);
     writeFile(`${base}/elm.json`, typeof elmJson === 'string' ? elmJson : JSON.stringify(elmJson, null, 4));
     for (const [relativePath, content] of Object.entries(files)) {
       writeFile(`${base}/${relativePath}`, content);
     }
     return base;
+  }
+
+  /**
+   * The `elm.json` of a package version present in the file system, or `null`
+   * when it is not there. Needed to resolve the dependencies of a package that
+   * is satisfied from the file system instead of being downloaded.
+   */
+  function readPackageElmJson(name, version) {
+    try {
+      return JSON.parse(readText(`${packagePath(name, version)}/elm.json`));
+    } catch {
+      return null;
+    }
   }
 
   /** Replace the application manifest the compiler reads at `/elm.json`. */
@@ -305,9 +351,11 @@ export async function createElmCompiler({
     createDir,
     unpackInto,
     installPackage,
+    readPackageElmJson,
     setApplicationElmJson,
     listPackages,
     listModules,
+    listImportableModules,
     printFs,
     fs,
     pkgDir,
